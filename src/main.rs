@@ -3,6 +3,7 @@
 use egg::{
     define_language, rewrite, Analysis, ENodeOrVar, Id, Language, PatternAst, Subst, Symbol,
 };
+use std::collections::HashSet;
 use std::io::Read;
 
 pub type Rewrite = egg::Rewrite<Op, ConstantFold>;
@@ -18,6 +19,11 @@ define_language! {
         ">>" = ShiftRightZero([Id; 2]),
         ">>s" = ShiftRightSign([Id; 2]),
         "&" = BitAnd([Id; 2]),
+        "global-bind" = Binds(Box<[Id]>),
+        "label" = Label(Box<[Id]>),
+        "branch-if" = BranchIf([Id; 3]),
+        "branch" = Branch(Box<[Id]>),
+        "return" = Return(Box<[Id]>),
         Const(i32),
         Arg(Symbol),
     }
@@ -44,6 +50,11 @@ impl Analysis<Op> for ConstantFold {
             Op::ShiftRightZero([l, r]) => ((c(l)? as u32) >> c(r)?) as i32,
             Op::ShiftRightSign([l, r]) => c(l)? >> c(r)?,
             Op::BitAnd([l, r]) => c(l)? & c(r)?,
+            Op::Binds(_) => return None,
+            Op::Label(_) => return None,
+            Op::BranchIf(_) => return None,
+            Op::Branch(_) => return None,
+            Op::Return(_) => return None,
             Op::Const(c) => *c,
             Op::Arg(_) => return None,
         };
@@ -108,7 +119,124 @@ pub fn rules() -> Vec<Rewrite> {
         rewrite!("shift-mul"; "(<< ?a ?n)" => "(* ?a (<< 1 ?n))"),
         rewrite!("shift-shift-left"; "(<< (<< ?a ?b) ?c)" => "(<< ?a (+ ?b ?c))"),
         rewrite!("shift-left-back"; "(<< (>> ?a ?b) ?b)" => "(& ?a (<< -1 ?b))"),
+        rewrite!("branch-if-true"; "(branch-if -1 ?t ?f)" => "?t"),
+        rewrite!("branch-if-false"; "(branch-if 0 ?t ?f)" => "?f"),
     ]
+}
+
+#[derive(Clone)]
+pub enum Branch<'a> {
+    Branch(Id, &'a [Id]),
+    Return(&'a [Id]),
+}
+
+impl<'a> Branch<'a> {
+    pub fn from_eclass(g: &'a EGraph, branch: Id) -> Option<Branch<'a>> {
+        for n in g[branch].iter() {
+            match n {
+                Op::Return(args) => {
+                    return Some(Branch::Return(args));
+                }
+                Op::Branch(args) => {
+                    let (target, args) = args.split_first().unwrap();
+                    return Some(Branch::Branch(*target, args));
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    pub fn dump(&'a self, mut extract: impl FnMut(Id) -> egg::RecExpr<Op>) {
+        let args = match self {
+            Branch::Branch(target, args) => {
+                print!("  goto block {}", target);
+                args
+            }
+            Branch::Return(args) => {
+                print!("  return");
+                args
+            }
+        };
+        for arg in args.iter() {
+            print!(" {}", extract(*arg));
+        }
+        println!();
+    }
+}
+
+#[derive(Clone)]
+pub struct Block<'a> {
+    conditional: Vec<(Id, Branch<'a>)>,
+    unconditional: Branch<'a>,
+}
+
+impl<'a> Block<'a> {
+    pub fn from_eclass(g: &'a EGraph, mut branch: Id) -> Block<'a> {
+        let mut conditional = Vec::new();
+        'walk_branches: loop {
+            if let Some(unconditional) = Branch::from_eclass(g, branch) {
+                return Block {
+                    conditional,
+                    unconditional,
+                };
+            }
+            for n in g[branch].iter() {
+                match n {
+                    Op::BranchIf([c, t, f]) => {
+                        conditional.push((*c, Branch::from_eclass(g, *t).unwrap()));
+                        branch = *f;
+                        continue 'walk_branches;
+                    }
+                    _ => {}
+                }
+            }
+            panic!("eclass {} is not a branch", branch);
+        }
+    }
+}
+
+pub fn extract_blocks<'a>(g: &'a EGraph, label: Id) -> Vec<(Id, &'a [Id], Block<'a>)> {
+    fn go<'a>(
+        g: &'a EGraph,
+        seen: &mut HashSet<Id>,
+        blocks: &mut Vec<(Id, &'a [Id], Block<'a>)>,
+        label: Id,
+    ) {
+        if !seen.insert(label) {
+            return;
+        }
+        let (branch, args) = g[label]
+            .iter()
+            .find_map(|n| {
+                if let Op::Label(args) = n {
+                    Some(args)
+                } else {
+                    None
+                }
+            })
+            .unwrap()
+            .split_last()
+            .unwrap();
+        let block = Block::from_eclass(g, *branch);
+
+        for (_cond, branch) in block.conditional.iter() {
+            if let Branch::Branch(target, _args) = branch {
+                go(g, seen, blocks, *target);
+            }
+        }
+        if let Branch::Branch(target, _args) = &block.unconditional {
+            go(g, seen, blocks, *target);
+        }
+
+        blocks.push((label, args, block));
+    }
+
+    let mut seen = HashSet::new();
+    let mut blocks = Vec::new();
+    go(g, &mut seen, &mut blocks, label);
+    blocks.reverse();
+    blocks
 }
 
 fn main() -> std::io::Result<()> {
@@ -116,24 +244,51 @@ fn main() -> std::io::Result<()> {
     std::io::stdin().read_to_string(&mut input)?;
     let input = input.parse().unwrap();
 
-    let mut runner = egg::Runner::default()
-        .with_explanations_enabled()
-        .with_expr(&input)
-        .run(&rules());
+    let mut runner = egg::Runner::default().with_expr(&input);
+
+    let mut bindings = Vec::new();
+    for class in runner.egraph.classes() {
+        for node in class.iter() {
+            if let Op::Binds(binds) = node {
+                let mut iter = binds.iter().copied();
+                while let Some(lhs) = iter.next() {
+                    bindings.push((lhs, iter.next().unwrap_or(class.id)));
+                }
+            }
+        }
+    }
+    for (lhs, rhs) in bindings {
+        runner.egraph[lhs]
+            .nodes
+            .retain(|op| !matches!(op, Op::Arg(_)));
+        runner.egraph.union(lhs, rhs);
+    }
+    runner.egraph.rebuild();
+
+    runner = runner.run(&rules());
     runner.print_report();
     println!("{:?}", runner.egraph.dump());
 
-    for root in runner.roots.clone() {
-        let extractor = egg::Extractor::new(&runner.egraph, egg::AstSize);
-        let (best_cost, best_expr) = extractor.find_best(root);
-        println!();
-        println!("{}: {}", best_cost, best_expr);
-        println!(
-            "{}",
-            runner
-                .explain_equivalence(&input, &best_expr)
-                .get_flat_string()
-        );
+    let extractor = egg::Extractor::new(&runner.egraph, egg::AstSize);
+
+    for &root in runner.roots.iter() {
+        let blocks = extract_blocks(&runner.egraph, root);
+
+        for (source, args, block) in blocks {
+            println!();
+            print!("block {}", source);
+            for arg in args {
+                print!(" {}", extractor.find_best(*arg).1);
+            }
+            println!(":");
+
+            for (cond, branch) in block.conditional.iter() {
+                println!("if {} then:", extractor.find_best(*cond).1);
+                branch.dump(|id| extractor.find_best(id).1);
+            }
+            println!("otherwise:");
+            block.unconditional.dump(|id| extractor.find_best(id).1);
+        }
     }
     Ok(())
 }
