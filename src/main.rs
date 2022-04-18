@@ -131,7 +131,7 @@ pub enum Branch<'a> {
 }
 
 impl<'a> Branch<'a> {
-    pub fn from_eclass(g: &'a EGraph, branch: Id) -> Option<Branch<'a>> {
+    pub fn from_eclass(g: &EGraph, branch: Id) -> Option<Branch> {
         for n in g[branch].iter() {
             match n {
                 Op::Return(args) => {
@@ -147,7 +147,7 @@ impl<'a> Branch<'a> {
         None
     }
 
-    pub fn dump(&'a self, mut extract: impl FnMut(Id) -> egg::RecExpr<Op>) {
+    pub fn dump(&self, mut extract: impl FnMut(Id) -> egg::RecExpr<Op>) {
         let args = match self {
             Branch::Branch(target, args) => {
                 print!("  goto block {}", target);
@@ -172,7 +172,7 @@ pub struct Block<'a> {
 }
 
 impl<'a> Block<'a> {
-    pub fn from_eclass(g: &'a EGraph, mut branch: Id) -> Block<'a> {
+    pub fn from_eclass(g: &EGraph, mut branch: Id) -> Block {
         let mut conditional = Vec::new();
         'walk_branches: loop {
             if let Some(unconditional) = Branch::from_eclass(g, branch) {
@@ -283,7 +283,7 @@ fn get_best_expr(best: &HashMap<Id, Op>, root: Id) -> egg::RecExpr<Op> {
     expr
 }
 
-pub fn extract_blocks<'a>(g: &'a EGraph, label: Id) -> Vec<(Id, &'a [Id], Block<'a>)> {
+pub fn extract_blocks(g: &EGraph, label: Id) -> Vec<(Id, &[Id], Block)> {
     fn go<'a>(
         g: &'a EGraph,
         seen: &mut HashSet<Id>,
