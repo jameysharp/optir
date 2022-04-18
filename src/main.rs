@@ -131,20 +131,15 @@ pub enum Branch<'a> {
 }
 
 impl<'a> Branch<'a> {
-    pub fn from_eclass(g: &EGraph, branch: Id) -> Option<Branch> {
-        for n in g[branch].iter() {
-            match n {
-                Op::Return(args) => {
-                    return Some(Branch::Return(args));
-                }
-                Op::Branch(args) => {
-                    let (target, args) = args.split_first().unwrap();
-                    return Some(Branch::Branch(*target, args));
-                }
-                _ => {}
+    pub fn from_node(n: &Op) -> Option<Branch> {
+        match n {
+            Op::Return(args) => Some(Branch::Return(args)),
+            Op::Branch(args) => {
+                let (target, args) = args.split_first().unwrap();
+                Some(Branch::Branch(*target, args))
             }
+            _ => None,
         }
-        None
     }
 
     pub fn dump(&self, mut extract: impl FnMut(Id) -> egg::RecExpr<Op>) {
@@ -172,26 +167,22 @@ pub struct Block<'a> {
 }
 
 impl<'a> Block<'a> {
-    pub fn from_eclass(g: &EGraph, mut branch: Id) -> Block {
+    pub fn from_nodes(nodes: &HashMap<Id, Op>, mut branch: Id) -> Block {
         let mut conditional = Vec::new();
-        'walk_branches: loop {
-            if let Some(unconditional) = Branch::from_eclass(g, branch) {
+        loop {
+            let node = &nodes[&branch];
+            if let Some(unconditional) = Branch::from_node(node) {
                 return Block {
                     conditional,
                     unconditional,
                 };
             }
-            for n in g[branch].iter() {
-                match n {
-                    Op::BranchIf([c, t, f]) => {
-                        conditional.push((*c, Branch::from_eclass(g, *t).unwrap()));
-                        branch = *f;
-                        continue 'walk_branches;
-                    }
-                    _ => {}
-                }
+            if let Op::BranchIf([c, t, f]) = node {
+                conditional.push((*c, Branch::from_node(&nodes[t]).unwrap()));
+                branch = *f;
+            } else {
+                panic!("node {} is not a branch", branch);
             }
-            panic!("eclass {} is not a branch", branch);
         }
     }
 }
@@ -283,9 +274,9 @@ fn get_best_expr(best: &HashMap<Id, Op>, root: Id) -> egg::RecExpr<Op> {
     expr
 }
 
-pub fn extract_blocks(g: &EGraph, label: Id) -> Vec<(Id, &[Id], Block)> {
+pub fn extract_blocks(nodes: &HashMap<Id, Op>, label: Id) -> Vec<(Id, &[Id], Block)> {
     fn go<'a>(
-        g: &'a EGraph,
+        nodes: &'a HashMap<Id, Op>,
         seen: &mut HashSet<Id>,
         blocks: &mut Vec<(Id, &'a [Id], Block<'a>)>,
         label: Id,
@@ -293,27 +284,22 @@ pub fn extract_blocks(g: &EGraph, label: Id) -> Vec<(Id, &[Id], Block)> {
         if !seen.insert(label) {
             return;
         }
-        let (branch, args) = g[label]
-            .iter()
-            .find_map(|n| {
-                if let Op::Label(args) = n {
-                    Some(args)
-                } else {
-                    None
-                }
-            })
-            .unwrap()
-            .split_last()
-            .unwrap();
-        let block = Block::from_eclass(g, *branch);
+
+        let (branch, args) = if let Op::Label(args) = &nodes[&label] {
+            args.split_last().unwrap()
+        } else {
+            panic!("node {} is not a label", label);
+        };
+
+        let block = Block::from_nodes(nodes, *branch);
 
         for (_cond, branch) in block.conditional.iter() {
             if let Branch::Branch(target, _args) = branch {
-                go(g, seen, blocks, *target);
+                go(nodes, seen, blocks, *target);
             }
         }
         if let Branch::Branch(target, _args) = &block.unconditional {
-            go(g, seen, blocks, *target);
+            go(nodes, seen, blocks, *target);
         }
 
         blocks.push((label, args, block));
@@ -321,7 +307,7 @@ pub fn extract_blocks(g: &EGraph, label: Id) -> Vec<(Id, &[Id], Block)> {
 
     let mut seen = HashSet::new();
     let mut blocks = Vec::new();
-    go(g, &mut seen, &mut blocks, label);
+    go(nodes, &mut seen, &mut blocks, label);
     blocks.reverse();
     blocks
 }
@@ -368,7 +354,7 @@ fn main() -> std::io::Result<()> {
 
         let best = best_nodes(&runner.egraph, root).unwrap();
         println!("{:?}", &best);
-        let blocks = extract_blocks(&runner.egraph, root);
+        let blocks = extract_blocks(&best, root);
 
         for (source, args, block) in blocks {
             println!();
