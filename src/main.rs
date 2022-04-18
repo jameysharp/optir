@@ -3,7 +3,7 @@
 use egg::{
     define_language, rewrite, Analysis, ENodeOrVar, Id, Language, PatternAst, Subst, Symbol,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 
 pub type Rewrite = egg::Rewrite<Op, ConstantFold>;
@@ -196,6 +196,88 @@ impl<'a> Block<'a> {
     }
 }
 
+pub fn best_nodes(g: &EGraph, root: Id) -> Option<HashMap<Id, Op>> {
+    let mut z3_cfg = z3::Config::new();
+    z3_cfg.set_model_generation(true);
+    let z3 = z3::Context::new(&z3_cfg);
+
+    let class_vars: HashMap<Id, (z3::ast::Bool, Vec<z3::ast::Bool>)> = g
+        .classes()
+        .map(|class| {
+            (
+                class.id,
+                (
+                    z3::ast::Bool::new_const(&z3, format!("c{}", class.id)),
+                    (0..class.len()).map(|idx|
+                        z3::ast::Bool::new_const(&z3, format!("c{}n{}", class.id, idx))
+                    ).collect(),
+                ),
+            )
+        })
+        .collect();
+
+    let solver = z3::Solver::new(&z3);
+    solver.assert(&class_vars[&g.find(root)].0);
+
+    for class in g.classes() {
+        let mut pb_buf = Vec::new();
+        let (class_var, node_vars) = &class_vars[&class.id];
+        for (node, node_var) in class.iter().zip(node_vars) {
+            pb_buf.push((node_var, 1));
+            for child in node.children() {
+                solver.assert(&node_var.implies(&class_vars[&child].0));
+            }
+        }
+        let omit_class = !class_var;
+        pb_buf.push((&omit_class, 1));
+        solver.assert(&z3::ast::Bool::pb_eq(&z3, &pb_buf, 1));
+    }
+
+    match solver.check() {
+        z3::SatResult::Sat => {
+            let model = solver.get_model().unwrap();
+            let mut result = HashMap::new();
+            for (class, (class_var, node_vars)) in class_vars {
+                let use_class = model.eval(&class_var, false).unwrap().as_bool().unwrap();
+                if use_class {
+                    for (node, node_var) in g[class].iter().zip(node_vars) {
+                        let use_node = model.eval(&node_var, false).unwrap().as_bool().unwrap();
+                        if use_node {
+                            result.insert(class, node.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+            Some(result)
+        }
+        res => {
+            println!("SAT result: {:?}", res);
+            None
+        }
+    }
+}
+
+fn get_best_expr(best: &HashMap<Id, Op>, root: Id) -> egg::RecExpr<Op> {
+    fn go(best: &HashMap<Id, Op>, seen: &mut HashMap<Id, Id>, expr: &mut egg::RecExpr<Op>, class: Id) -> Id {
+        if let Some(known) = seen.get(&class) {
+            return *known;
+        }
+
+        let mut node = best[&class].clone();
+        for child in node.children_mut() {
+            *child = go(best, seen, expr, *child);
+        }
+        let idx = expr.add(node);
+        seen.insert(class, idx);
+        idx
+    }
+    let mut seen = HashMap::new();
+    let mut expr = egg::RecExpr::default();
+    go(best, &mut seen, &mut expr, root);
+    expr
+}
+
 pub fn extract_blocks<'a>(g: &'a EGraph, label: Id) -> Vec<(Id, &'a [Id], Block<'a>)> {
     fn go<'a>(
         g: &'a EGraph,
@@ -247,9 +329,11 @@ fn main() -> std::io::Result<()> {
     let mut runner = egg::Runner::default().with_expr(&input);
 
     let mut bindings = Vec::new();
+    let mut prune_binds = Vec::new();
     for class in runner.egraph.classes() {
         for node in class.iter() {
             if let Op::Binds(binds) = node {
+                prune_binds.push(class.id);
                 let mut iter = binds.iter().copied();
                 while let Some(lhs) = iter.next() {
                     bindings.push((lhs, iter.next().unwrap_or(class.id)));
@@ -263,32 +347,40 @@ fn main() -> std::io::Result<()> {
             .retain(|op| !matches!(op, Op::Arg(_)));
         runner.egraph.union(lhs, rhs);
     }
+    for class in prune_binds {
+        runner.egraph[class]
+            .nodes
+            .retain(|op| !matches!(op, Op::Binds(_)));
+    }
     runner.egraph.rebuild();
 
     runner = runner.run(&rules());
     runner.print_report();
     println!("{:?}", runner.egraph.dump());
 
-    let extractor = egg::Extractor::new(&runner.egraph, egg::AstSize);
-
     for &root in runner.roots.iter() {
+        let root = runner.egraph.find(root);
+
+        let best = best_nodes(&runner.egraph, root).unwrap();
+        println!("{:?}", &best);
         let blocks = extract_blocks(&runner.egraph, root);
 
         for (source, args, block) in blocks {
             println!();
             print!("block {}", source);
             for arg in args {
-                print!(" {}", extractor.find_best(*arg).1);
+                print!(" {}", get_best_expr(&best, *arg));
             }
             println!(":");
 
             for (cond, branch) in block.conditional.iter() {
-                println!("if {} then:", extractor.find_best(*cond).1);
-                branch.dump(|id| extractor.find_best(id).1);
+                println!("if {} then:", get_best_expr(&best, *cond));
+                branch.dump(|id| get_best_expr(&best, id));
             }
             println!("otherwise:");
-            block.unconditional.dump(|id| extractor.find_best(id).1);
+            block.unconditional.dump(|id| get_best_expr(&best, id));
         }
     }
+
     Ok(())
 }
