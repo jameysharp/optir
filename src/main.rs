@@ -187,7 +187,7 @@ impl<'a> Block<'a> {
     }
 }
 
-pub fn best_nodes(g: &EGraph, root: Id) -> Option<HashMap<Id, Op>> {
+pub fn best_nodes(g: &EGraph, root: Id, cost: impl Fn(&Op) -> u64) -> Option<HashMap<Id, Op>> {
     let mut z3_cfg = z3::Config::new();
     z3_cfg.set_model_generation(true);
     let z3 = z3::Context::new(&z3_cfg);
@@ -207,7 +207,7 @@ pub fn best_nodes(g: &EGraph, root: Id) -> Option<HashMap<Id, Op>> {
         })
         .collect();
 
-    let solver = z3::Solver::new(&z3);
+    let solver = z3::Optimize::new(&z3);
     solver.assert(&class_vars[&root].0);
 
     for class in g.classes() {
@@ -218,13 +218,20 @@ pub fn best_nodes(g: &EGraph, root: Id) -> Option<HashMap<Id, Op>> {
             for child in node.children() {
                 solver.assert(&node_var.implies(&class_vars[&child].0));
             }
+
+            let node_cost = cost(node);
+            if node_cost != 0 {
+                let omit_node = !node_var;
+                solver.assert_soft(&omit_node, node_cost, None);
+            }
         }
+
         let omit_class = !class_var;
         pb_buf.push((&omit_class, 1));
         solver.assert(&z3::ast::Bool::pb_eq(&z3, &pb_buf, 1));
     }
 
-    match solver.check() {
+    match solver.check(&[]) {
         z3::SatResult::Sat => {
             let model = solver.get_model().unwrap();
             let mut result = HashMap::new();
@@ -352,7 +359,14 @@ fn main() -> std::io::Result<()> {
     for &root in runner.roots.iter() {
         let root = runner.egraph.find(root);
 
-        let best = best_nodes(&runner.egraph, root).unwrap();
+        let best = best_nodes(&runner.egraph, root, |op| match op {
+            // assume labels and conditional branches don't cost any more than the branches they
+            // pull in
+            Op::Label(_) | Op::BranchIf(_) => 0,
+            // give everything else equal costs for now
+            _ => 1,
+        })
+        .unwrap();
         println!("{:?}", &best);
         let blocks = extract_blocks(&best, root);
 
