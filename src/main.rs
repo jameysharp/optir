@@ -208,9 +208,9 @@ pub fn best_nodes(g: &EGraph, root: Id) -> Option<HashMap<Id, Op>> {
                 class.id,
                 (
                     z3::ast::Bool::new_const(&z3, format!("c{}", class.id)),
-                    (0..class.len()).map(|idx|
-                        z3::ast::Bool::new_const(&z3, format!("c{}n{}", class.id, idx))
-                    ).collect(),
+                    (0..class.len())
+                        .map(|idx| z3::ast::Bool::new_const(&z3, format!("c{}n{}", class.id, idx)))
+                        .collect(),
                 ),
             )
         })
@@ -259,7 +259,12 @@ pub fn best_nodes(g: &EGraph, root: Id) -> Option<HashMap<Id, Op>> {
 }
 
 fn get_best_expr(best: &HashMap<Id, Op>, root: Id) -> egg::RecExpr<Op> {
-    fn go(best: &HashMap<Id, Op>, seen: &mut HashMap<Id, Id>, expr: &mut egg::RecExpr<Op>, class: Id) -> Id {
+    fn go(
+        best: &HashMap<Id, Op>,
+        seen: &mut HashMap<Id, Id>,
+        expr: &mut egg::RecExpr<Op>,
+        class: Id,
+    ) -> Id {
         if let Some(known) = seen.get(&class) {
             return *known;
         }
