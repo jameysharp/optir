@@ -208,7 +208,7 @@ pub fn best_nodes(g: &EGraph, root: Id) -> Option<HashMap<Id, Op>> {
         .collect();
 
     let solver = z3::Solver::new(&z3);
-    solver.assert(&class_vars[&g.find(root)].0);
+    solver.assert(&class_vars[&root].0);
 
     for class in g.classes() {
         let mut pb_buf = Vec::new();
