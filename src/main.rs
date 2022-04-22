@@ -1,13 +1,31 @@
 #![warn(nonstandard_style)]
 
-use egg::{
-    define_language, rewrite, Analysis, ENodeOrVar, Id, Language, PatternAst, Subst, Symbol,
-};
-use std::collections::{HashMap, HashSet};
+use egg::{define_language, rewrite, Analysis, ENodeOrVar, Id, Language, PatternAst, Subst};
+use std::collections::HashMap;
 use std::io::Read;
 
 pub type Rewrite = egg::Rewrite<Op, ConstantFold>;
 pub type EGraph = egg::EGraph<Op, ConstantFold>;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Arg(u16);
+
+impl std::fmt::Display for Arg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "arg-{}", self.0)
+    }
+}
+
+impl std::str::FromStr for Arg {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, &'static str> {
+        let suffix = s.strip_prefix("arg-").ok_or("doesn't start with 'arg-'")?;
+        Ok(Arg(suffix
+            .parse()
+            .map_err(|_| "argument index isn't a number")?))
+    }
+}
 
 define_language! {
     pub enum Op {
@@ -19,13 +37,8 @@ define_language! {
         ">>" = ShiftRightZero([Id; 2]),
         ">>s" = ShiftRightSign([Id; 2]),
         "&" = BitAnd([Id; 2]),
-        "global-bind" = Binds(Box<[Id]>),
-        "label" = Label(Box<[Id]>),
-        "branch-if" = BranchIf([Id; 3]),
-        "branch" = Branch(Box<[Id]>),
-        "return" = Return(Box<[Id]>),
         Const(i32),
-        Arg(Symbol),
+        Arg(Arg),
     }
 }
 
@@ -50,11 +63,6 @@ impl Analysis<Op> for ConstantFold {
             Op::ShiftRightZero([l, r]) => ((c(l)? as u32) >> c(r)?) as i32,
             Op::ShiftRightSign([l, r]) => c(l)? >> c(r)?,
             Op::BitAnd([l, r]) => c(l)? & c(r)?,
-            Op::Binds(_) => return None,
-            Op::Label(_) => return None,
-            Op::BranchIf(_) => return None,
-            Op::Branch(_) => return None,
-            Op::Return(_) => return None,
             Op::Const(c) => *c,
             Op::Arg(_) => return None,
         };
@@ -119,72 +127,7 @@ pub fn rules() -> Vec<Rewrite> {
         rewrite!("shift-mul"; "(<< ?a ?n)" => "(* ?a (<< 1 ?n))"),
         rewrite!("shift-shift-left"; "(<< (<< ?a ?b) ?c)" => "(<< ?a (+ ?b ?c))"),
         rewrite!("shift-left-back"; "(<< (>> ?a ?b) ?b)" => "(& ?a (<< -1 ?b))"),
-        rewrite!("branch-if-true"; "(branch-if -1 ?t ?f)" => "?t"),
-        rewrite!("branch-if-false"; "(branch-if 0 ?t ?f)" => "?f"),
     ]
-}
-
-#[derive(Clone)]
-pub enum Branch<'a> {
-    Branch(Id, &'a [Id]),
-    Return(&'a [Id]),
-}
-
-impl<'a> Branch<'a> {
-    pub fn from_node(n: &Op) -> Option<Branch> {
-        match n {
-            Op::Return(args) => Some(Branch::Return(args)),
-            Op::Branch(args) => {
-                let (target, args) = args.split_first().unwrap();
-                Some(Branch::Branch(*target, args))
-            }
-            _ => None,
-        }
-    }
-
-    pub fn dump(&self, mut extract: impl FnMut(Id) -> egg::RecExpr<Op>) {
-        let args = match self {
-            Branch::Branch(target, args) => {
-                print!("  goto block {}", target);
-                args
-            }
-            Branch::Return(args) => {
-                print!("  return");
-                args
-            }
-        };
-        for arg in args.iter() {
-            print!(" {}", extract(*arg));
-        }
-        println!();
-    }
-}
-
-#[derive(Clone)]
-pub struct Block<'a> {
-    conditional: Vec<(Id, Branch<'a>)>,
-    unconditional: Branch<'a>,
-}
-
-impl<'a> Block<'a> {
-    pub fn from_nodes(nodes: &HashMap<Id, Op>, mut branch: Id) -> Block {
-        let mut conditional = Vec::new();
-        loop {
-            let node = &nodes[&branch];
-            if let Some(unconditional) = Branch::from_node(node) {
-                return Block {
-                    conditional,
-                    unconditional,
-                };
-            }
-            if let Op::BranchIf([c, t, f]) = node {
-                conditional.push((*c, Branch::from_node(&nodes[t]).unwrap()));
-                branch = *f;
-            } else {
-                panic!("node {} is not a branch", branch);
-            }
-        }
-    }
 }
 
 pub fn best_nodes(g: &EGraph, root: Id, cost: impl Fn(&Op) -> u64) -> Option<HashMap<Id, Op>> {
@@ -281,76 +224,12 @@ fn get_best_expr(best: &HashMap<Id, Op>, root: Id) -> egg::RecExpr<Op> {
     expr
 }
 
-pub fn extract_blocks(nodes: &HashMap<Id, Op>, label: Id) -> Vec<(Id, &[Id], Block)> {
-    fn go<'a>(
-        nodes: &'a HashMap<Id, Op>,
-        seen: &mut HashSet<Id>,
-        blocks: &mut Vec<(Id, &'a [Id], Block<'a>)>,
-        label: Id,
-    ) {
-        if !seen.insert(label) {
-            return;
-        }
-
-        let (branch, args) = if let Op::Label(args) = &nodes[&label] {
-            args.split_last().unwrap()
-        } else {
-            panic!("node {} is not a label", label);
-        };
-
-        let block = Block::from_nodes(nodes, *branch);
-
-        for (_cond, branch) in block.conditional.iter() {
-            if let Branch::Branch(target, _args) = branch {
-                go(nodes, seen, blocks, *target);
-            }
-        }
-        if let Branch::Branch(target, _args) = &block.unconditional {
-            go(nodes, seen, blocks, *target);
-        }
-
-        blocks.push((label, args, block));
-    }
-
-    let mut seen = HashSet::new();
-    let mut blocks = Vec::new();
-    go(nodes, &mut seen, &mut blocks, label);
-    blocks.reverse();
-    blocks
-}
-
 fn main() -> std::io::Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
     let input = input.parse().unwrap();
 
     let mut runner = egg::Runner::default().with_expr(&input);
-
-    let mut bindings = Vec::new();
-    let mut prune_binds = Vec::new();
-    for class in runner.egraph.classes() {
-        for node in class.iter() {
-            if let Op::Binds(binds) = node {
-                prune_binds.push(class.id);
-                let mut iter = binds.iter().copied();
-                while let Some(lhs) = iter.next() {
-                    bindings.push((lhs, iter.next().unwrap_or(class.id)));
-                }
-            }
-        }
-    }
-    for (lhs, rhs) in bindings {
-        runner.egraph[lhs]
-            .nodes
-            .retain(|op| !matches!(op, Op::Arg(_)));
-        runner.egraph.union(lhs, rhs);
-    }
-    for class in prune_binds {
-        runner.egraph[class]
-            .nodes
-            .retain(|op| !matches!(op, Op::Binds(_)));
-    }
-    runner.egraph.rebuild();
 
     runner = runner.run(&rules());
     runner.print_report();
@@ -360,31 +239,13 @@ fn main() -> std::io::Result<()> {
         let root = runner.egraph.find(root);
 
         let best = best_nodes(&runner.egraph, root, |op| match op {
-            // assume labels and conditional branches don't cost any more than the branches they
-            // pull in
-            Op::Label(_) | Op::BranchIf(_) => 0,
+            Op::Arg(_) | Op::Const(_) => 0,
             // give everything else equal costs for now
             _ => 1,
         })
         .unwrap();
-        println!("{:?}", &best);
-        let blocks = extract_blocks(&best, root);
 
-        for (source, args, block) in blocks {
-            println!();
-            print!("block {}", source);
-            for arg in args {
-                print!(" {}", get_best_expr(&best, *arg));
-            }
-            println!(":");
-
-            for (cond, branch) in block.conditional.iter() {
-                println!("if {} then:", get_best_expr(&best, *cond));
-                branch.dump(|id| get_best_expr(&best, id));
-            }
-            println!("otherwise:");
-            block.unconditional.dump(|id| get_best_expr(&best, id));
-        }
+        println!("{}", get_best_expr(&best, root));
     }
 
     Ok(())
