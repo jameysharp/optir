@@ -74,7 +74,7 @@ define_language! {
 }
 
 type ConstantFoldData = Option<(i32, PatternAst<Op>)>;
-type ArgsUsedData = u64;
+type ArgsUsedData = bitvec::BitArr!(for u8::MAX as usize);
 
 #[derive(Debug)]
 pub struct AnalysisResults {
@@ -135,22 +135,22 @@ impl egg::Analysis<Op> for Analysis {
         }
 
         fn make_args_used(egraph: &EGraph, enode: &Op) -> ArgsUsedData {
+            let mut result = ArgsUsedData::ZERO;
             match enode {
-                Op::Arg(idx) => 1 << idx.0,
+                Op::Arg(idx) => result.set(idx.0 as usize, true),
 
                 // TODO: identify more precise dependencies when selecting from tuples produced by
                 // control-flow or copy nodes
                 _ => {
-                    let mut result = 0;
                     for &child in enode.children() {
                         let child = &egraph[child];
                         if !matches!(&child.nodes[..], [Op::Case(_)]) {
                             result |= child.data.args_used;
                         }
                     }
-                    result
                 }
             }
+            result
         }
 
         AnalysisResults {
@@ -215,7 +215,7 @@ pub fn rules() -> Vec<Rewrite> {
 
 fn rewrite_args(egraph: &mut EGraph, subst: &HashMap<Get, Id>, id: &mut Id) {
     let class = &egraph[*id];
-    if class.data.args_used == 0 {
+    if subst.keys().all(|&Get(idx)| !class.data.args_used[idx as usize]) {
         return;
     }
 
@@ -262,7 +262,7 @@ fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> 
     for (id, switch_args) in switches.iter() {
         let (predicate, switch_args) = switch_args.split_first().unwrap();
 
-        let mut args_used = 0;
+        let mut args_used = ArgsUsedData::ZERO;
         let mut cases = Vec::new();
         let mut input_args = Vec::new();
         for &arg in switch_args.iter() {
@@ -288,9 +288,9 @@ fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> 
         if cases.len() > 1 {
             // Remove inputs which are either unused or are redundant with other inputs, and
             // rewrite the cases to use the revised argument order.
-            let mut dedup_args = Vec::with_capacity(args_used.count_ones() as usize);
+            let mut dedup_args = Vec::with_capacity(args_used.count_ones());
             for (idx, arg) in input_args.iter().enumerate() {
-                if args_used & (1 << idx) != 0 && !dedup_args.contains(arg) {
+                if args_used[idx] && !dedup_args.contains(arg) {
                     dedup_args.push(*arg);
                 }
             }
@@ -299,10 +299,12 @@ fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> 
                 let mut subst = HashMap::new();
                 for (old_idx, old) in input_args.into_iter().enumerate() {
                     if let Some(new_idx) = dedup_args.iter().position(|new| *new == old) {
-                        subst.insert(
-                            Get(old_idx as u8),
-                            runner.egraph.add(Op::Arg(Get(new_idx as u8))),
-                        );
+                        if old_idx != new_idx {
+                            subst.insert(
+                                Get(old_idx as u8),
+                                runner.egraph.add(Op::Arg(Get(new_idx as u8))),
+                            );
+                        }
                     }
                 }
 
