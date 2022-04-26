@@ -241,11 +241,19 @@ fn rewrite_args(egraph: &mut EGraph, subst: &HashMap<Get, Id>, id: &mut Id) {
 
 fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> {
     let mut switches = Vec::new();
+    let mut unions = Vec::new();
 
     for class in runner.egraph.classes() {
         for node in class.iter() {
             match node {
                 Op::Switch(args) => switches.push((class.id, args.clone())),
+                &Op::Get(idx, src) => {
+                    for node in runner.egraph[src].iter() {
+                        if let Op::Copy(args) = node {
+                            unions.push((class.id, args[idx.0 as usize]));
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -382,6 +390,10 @@ fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> 
 
         runner.egraph.union(*id, new_switch);
         // TODO: delete switch node from this class?
+    }
+
+    for (a, b) in unions {
+        runner.egraph.union(a, b);
     }
 
     runner.egraph.rebuild();
