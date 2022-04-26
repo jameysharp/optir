@@ -388,98 +388,23 @@ fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> 
     Ok(())
 }
 
-pub fn best_nodes(g: &EGraph, root: Id, cost: impl Fn(&Op) -> u64) -> Option<HashMap<Id, Op>> {
-    let mut z3_cfg = z3::Config::new();
-    z3_cfg.set_model_generation(true);
-    let z3 = z3::Context::new(&z3_cfg);
+struct OpCost;
 
-    let class_vars: HashMap<Id, (z3::ast::Bool, Vec<z3::ast::Bool>)> = g
-        .classes()
-        .map(|class| {
-            (
-                class.id,
-                (
-                    z3::ast::Bool::new_const(&z3, format!("c{}", class.id)),
-                    (0..class.len())
-                        .map(|idx| z3::ast::Bool::new_const(&z3, format!("c{}n{}", class.id, idx)))
-                        .collect(),
-                ),
-            )
-        })
-        .collect();
+impl egg::CostFunction<Op> for OpCost {
+    type Cost = usize;
 
-    let solver = z3::Optimize::new(&z3);
-    solver.assert(&class_vars[&root].0);
-
-    for class in g.classes() {
-        let mut pb_buf = Vec::new();
-        let (class_var, node_vars) = &class_vars[&class.id];
-        for (node, node_var) in class.iter().zip(node_vars) {
-            pb_buf.push((node_var, 1));
-            for child in node.children() {
-                solver.assert(&node_var.implies(&class_vars[&child].0));
-            }
-
-            let node_cost = cost(node);
-            if node_cost != 0 {
-                let omit_node = !node_var;
-                solver.assert_soft(&omit_node, node_cost, None);
-            }
-        }
-
-        let omit_class = !class_var;
-        pb_buf.push((&omit_class, 1));
-        solver.assert(&z3::ast::Bool::pb_eq(&z3, &pb_buf, 1));
+    fn cost<C>(&mut self, enode: &Op, mut costs: C) -> Self::Cost
+    where
+        C: FnMut(Id) -> Self::Cost
+    {
+        let base_cost = match enode {
+            Op::Arg(_) | Op::Const(_) => 0,
+            Op::Switch(args) | Op::Case(args) => args.len(),
+            // give everything else equal costs for now
+            _ => 1,
+        };
+        enode.fold(base_cost, |sum, id| sum + costs(id))
     }
-
-    match solver.check(&[]) {
-        z3::SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            let mut result = HashMap::new();
-            for (class, (class_var, node_vars)) in class_vars {
-                let use_class = model.eval(&class_var, false).unwrap().as_bool().unwrap();
-                if use_class {
-                    for (node, node_var) in g[class].iter().zip(node_vars) {
-                        let use_node = model.eval(&node_var, false).unwrap().as_bool().unwrap();
-                        if use_node {
-                            result.insert(class, node.clone());
-                            break;
-                        }
-                    }
-                }
-            }
-            Some(result)
-        }
-        res => {
-            println!("SAT result: {:?}", res);
-            None
-        }
-    }
-}
-
-fn get_best_expr(best: &HashMap<Id, Op>, root: Id) -> egg::RecExpr<Op> {
-    fn go(
-        best: &HashMap<Id, Op>,
-        seen: &mut HashMap<Id, Id>,
-        expr: &mut egg::RecExpr<Op>,
-        class: Id,
-    ) -> Id {
-        if let Some(known) = seen.get(&class) {
-            return *known;
-        }
-
-        let mut node = best[&class].clone();
-        for child in node.children_mut() {
-            *child = go(best, seen, expr, *child);
-        }
-        let idx = expr.add(node);
-        seen.insert(class, idx);
-        idx
-    }
-    let mut seen = HashMap::new();
-    let mut expr = egg::RecExpr::default();
-    go(best, &mut seen, &mut expr, root);
-    expr
 }
 
 fn main() -> std::io::Result<()> {
@@ -495,20 +420,11 @@ fn main() -> std::io::Result<()> {
     runner.print_report();
     println!("{:?}", runner.egraph.dump());
 
+    let extractor = egg::Extractor::new(&runner.egraph, OpCost);
+
     for &root in runner.roots.iter() {
-        let root = runner.egraph.find(root);
-
-        let best = best_nodes(&runner.egraph, root, |op| match op {
-            Op::Arg(_) | Op::Const(_) => 0,
-            Op::Switch(args) | Op::Case(args) => args.len() as u64,
-            // give everything else equal costs for now
-            _ => 1,
-        })
-        .unwrap();
-
-        println!("{:?}", &best);
-
-        println!("{}", get_best_expr(&best, root));
+        let (cost, expr) = extractor.find_best(root);
+        println!("root {} cost {}: {}", root, cost, expr);
     }
 
     Ok(())
