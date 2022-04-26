@@ -432,13 +432,12 @@ fn main() -> std::io::Result<()> {
 
     runner = runner.run(&rules());
     runner.print_report();
-    println!("{:?}", runner.egraph.dump());
 
     let extractor = egg::Extractor::new(&runner.egraph, OpCost);
 
     for &root in runner.roots.iter() {
         let (cost, expr) = extractor.find_best(root);
-        println!("root {} cost {}: {}", root, cost, expr);
+        println!("cost {}: {}", cost, expr);
     }
 
     Ok(())
