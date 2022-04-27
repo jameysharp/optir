@@ -88,12 +88,12 @@ define_language! {
 
         "copy" = Copy(Box<[Id]>),
 
-        // An RVSDG "theta" node representing a structured tail-controlled loop. The first operand
+        // An RVSDG "theta" node representing a structured tail-controlled loop. The last operand
         // is the predicate indicating whether the loop should continue for another iteration. The
-        // remaining operands are N inputs, followed by N results. The input is available in the
-        // first iteration as the corresponding argument; on subsequent iterations that argument
-        // comes from the corresponding result of the previous iteration. After the final
-        // iteration, the result is available as a corresponding output of the loop.
+        // other operands are N inputs, followed by N results. The input is available in the first
+        // iteration as the corresponding argument; on subsequent iterations that argument comes
+        // from the corresponding result of the previous iteration. After the final iteration, the
+        // result is available as a corresponding output of the loop.
         "loop" = Loop(Box<[Id]>),
 
         // An RVSDG "gamma" node representing a structured generalized if-then-else block. The
@@ -122,7 +122,7 @@ impl Op {
             Op::Loop(args) => {
                 assert!(args.len() % 2 == 1);
                 let inputs = args.len() / 2;
-                &args[..1 + inputs]
+                &args[..inputs]
             }
 
             Op::Switch(spec, args) => spec.split_scope(args).0,
@@ -135,7 +135,7 @@ impl Op {
             Op::Loop(args) => {
                 assert!(args.len() % 2 == 1);
                 let inputs = args.len() / 2;
-                &mut args[..1 + inputs]
+                &mut args[..inputs]
             }
 
             Op::Switch(spec, args) => spec.split_scope_mut(args).0,
