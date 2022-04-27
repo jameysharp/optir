@@ -3,6 +3,7 @@
 use egg::{define_language, rewrite, ENodeOrVar, Id, Language, PatternAst, Subst};
 use std::collections::HashMap;
 use std::io::Read;
+use std::num::NonZeroU8;
 
 pub type Rewrite = egg::Rewrite<Op, Analysis>;
 pub type EGraph = egg::EGraph<Op, Analysis>;
@@ -27,6 +28,53 @@ impl std::str::FromStr for Get {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Switch {
+    cases: NonZeroU8,
+    outputs: NonZeroU8,
+}
+
+impl Switch {
+    fn total_outputs(&self) -> usize {
+        self.cases.get() as usize * self.outputs.get() as usize
+    }
+
+    pub fn split_scope<'a>(&self, ids: &'a [Id]) -> (&'a [Id], &'a [Id]) {
+        let inputs = ids.len().saturating_sub(self.total_outputs());
+        assert!(inputs > 0);
+        ids.split_at(inputs)
+    }
+
+    pub fn split_scope_mut<'a>(&self, ids: &'a mut [Id]) -> (&'a mut [Id], &'a mut [Id]) {
+        let inputs = ids.len().saturating_sub(self.total_outputs());
+        assert!(inputs > 0);
+        ids.split_at_mut(inputs)
+    }
+}
+
+impl std::fmt::Display for Switch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "switch-{}-cases-{}-outputs", self.cases, self.outputs)
+    }
+}
+
+impl std::str::FromStr for Switch {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, &'static str> {
+        s.strip_prefix("switch-")
+            .and_then(|suf| suf.strip_suffix("-outputs"))
+            .and_then(|suf| suf.split_once("-cases-"))
+            .and_then(|(cases, outputs)| {
+                cases
+                    .parse()
+                    .and_then(|cases| outputs.parse().map(|outputs| Switch { cases, outputs }))
+                    .ok()
+            })
+            .ok_or("not in 'switch-N-cases-M-outputs' format")
+    }
+}
+
 define_language! {
     pub enum Op {
         "+" = Add([Id; 2]),
@@ -38,6 +86,8 @@ define_language! {
         ">>s" = ShiftRightSign([Id; 2]),
         "&" = BitAnd([Id; 2]),
 
+        "copy" = Copy(Box<[Id]>),
+
         // An RVSDG "theta" node representing a structured tail-controlled loop. The first operand
         // is the predicate indicating whether the loop should continue for another iteration. The
         // remaining operands are N inputs, followed by N results. The input is available in the
@@ -48,18 +98,11 @@ define_language! {
 
         // An RVSDG "gamma" node representing a structured generalized if-then-else block. The
         // first operand is the predicate indicating which case to evaluate. The next operands are
-        // "case" expressions, one for each value in the predicate's range. The remaining operands
-        // are inputs provided to the selected case. Every case must have the same input signature
-        // as the provided inputs to the "switch" node which contains that case. The output
-        // signature of the "switch" is the same as for the cases, which all must have identical
-        // output signatures.
-        "switch" = Switch(Box<[Id]>),
-
-        // The body of one branch of an RVSDG "gamma" node. The operands are the outputs which the
-        // switch node should produce, if this case is selected by the predicate.
-        "case" = Case(Box<[Id]>),
-
-        "copy" = Copy(Box<[Id]>),
+        // inputs provided to the selected case. The remaining operands are case outputs, according
+        // to the signature specified in the operator label: for each case, its outputs are
+        // contiguous. Every case must have the same input signature as the provided inputs to the
+        // "switch" node.
+        Switch(Switch, Box<[Id]>),
 
         // A node representing the arguments of the nearest enclosing structured control block,
         // such as "loop" or "case". The operational semantics depend on which block transitively
@@ -70,6 +113,34 @@ define_language! {
         Get(Get, Id),
 
         Const(i32),
+    }
+}
+
+impl Op {
+    pub fn same_scope_children(&self) -> &[Id] {
+        match self {
+            Op::Loop(args) => {
+                assert!(args.len() % 2 == 1);
+                let inputs = args.len() / 2;
+                &args[..1 + inputs]
+            }
+
+            Op::Switch(spec, args) => spec.split_scope(args).0,
+            _ => self.children(),
+        }
+    }
+
+    pub fn same_scope_children_mut(&mut self) -> &mut [Id] {
+        match self {
+            Op::Loop(args) => {
+                assert!(args.len() % 2 == 1);
+                let inputs = args.len() / 2;
+                &mut args[..1 + inputs]
+            }
+
+            Op::Switch(spec, args) => spec.split_scope_mut(args).0,
+            _ => self.children_mut(),
+        }
     }
 }
 
@@ -116,10 +187,9 @@ impl egg::Analysis<Op> for Analysis {
                 Op::ShiftRightZero([l, r]) => ((c(l)? as u32) >> c(r)?) as i32,
                 Op::ShiftRightSign([l, r]) => c(l)? >> c(r)?,
                 Op::BitAnd([l, r]) => c(l)? & c(r)?,
-                Op::Loop(_) => return None,
-                Op::Switch(_) => return None,
-                Op::Case(_) => return None,
                 Op::Copy(_) => return None,
+                Op::Loop(_) => return None,
+                Op::Switch(_, _) => return None,
                 Op::Arg(_) => return None,
                 Op::Get(_, _) => return None,
                 Op::Const(c) => *c,
@@ -139,24 +209,11 @@ impl egg::Analysis<Op> for Analysis {
             match enode {
                 Op::Arg(idx) => result.set(idx.0 as usize, true),
 
-                // Arguments used in loop outputs are in a different scope than the loop itself.
-                Op::Loop(args) => {
-                    let inputs = args.len() / 2;
-                    for &child in args[..1 + inputs].iter() {
-                        result |= egraph[child].data.args_used;
-                    }
-                }
-
                 // TODO: identify more precise dependencies when selecting from tuples produced by
                 // control-flow or copy nodes
                 _ => {
-                    for &child in enode.children() {
-                        let child = &egraph[child];
-                        // Arguments used in switch cases are in a different scope than the
-                        // surrounding switch.
-                        if !matches!(&child.nodes[..], [Op::Case(_)]) {
-                            result |= child.data.args_used;
-                        }
+                    for &child in enode.same_scope_children() {
+                        result |= egraph[child].data.args_used;
                     }
                 }
             }
@@ -225,36 +282,20 @@ pub fn rules() -> Vec<Rewrite> {
 
 fn rewrite_args(egraph: &mut EGraph, subst: &HashMap<Get, Id>, id: &mut Id) {
     let class = &egraph[*id];
-    if subst.keys().all(|&Get(idx)| !class.data.args_used[idx as usize]) {
+    let args_used = &class.data.args_used;
+    if subst.keys().all(|idx| !args_used[idx.0 as usize]) {
         return;
     }
 
     let mut nodes: Vec<Op> = class.iter().cloned().collect();
     for node in nodes.iter_mut() {
-        match node {
-            Op::Arg(idx) => {
-                *id = subst[idx];
-                return;
-            }
+        if let Op::Arg(idx) = node {
+            *id = subst[idx];
+            return;
+        }
 
-            // Don't rewrite inside switch cases or loop outputs, because those are in a separate scope.
-            Op::Case(_) => {
-                // A switch case is never equivalent to anything else.
-                debug_assert_eq!(nodes.len(), 1);
-                return;
-            }
-            Op::Loop(args) => {
-                let inputs = args.len() / 2;
-                for child in args[..1 + inputs].iter_mut() {
-                    rewrite_args(egraph, subst, child);
-                }
-            }
-
-            _ => {
-                for child in node.children_mut() {
-                    rewrite_args(egraph, subst, child);
-                }
-            }
+        for child in node.same_scope_children_mut() {
+            rewrite_args(egraph, subst, child);
         }
     }
 
@@ -267,15 +308,27 @@ fn rewrite_args(egraph: &mut EGraph, subst: &HashMap<Get, Id>, id: &mut Id) {
 }
 
 fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> {
+    let egraph = &mut runner.egraph;
     let mut switches = Vec::new();
     let mut unions = Vec::new();
 
-    for class in runner.egraph.classes() {
+    for class in egraph.classes() {
         for node in class.iter() {
             match node {
-                Op::Switch(args) => switches.push((class.id, args.clone())),
+                Op::Switch(spec, args) => {
+                    let (outer_scope, nested_scope) = spec.split_scope(args);
+                    let (predicate, input_args) = outer_scope.split_first().unwrap();
+                    switches.push((
+                        class.id,
+                        *spec,
+                        *predicate,
+                        input_args.to_vec(),
+                        nested_scope.to_vec(),
+                    ));
+                }
+
                 &Op::Get(idx, src) => {
-                    for node in runner.egraph[src].iter() {
+                    for node in egraph[src].iter() {
                         if let Op::Copy(args) = node {
                             unions.push((class.id, args[idx.0 as usize]));
                         }
@@ -286,38 +339,31 @@ fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> 
         }
     }
 
-    for (id, switch_args) in switches.iter() {
-        let (predicate, switch_args) = switch_args.split_first().unwrap();
-
-        let mut args_used = ArgsUsedData::ZERO;
-        let mut cases = Vec::new();
-        let mut input_args = Vec::new();
-        for &arg in switch_args.iter() {
-            let class = &runner.egraph[arg];
-            if let [Op::Case(args)] = &class.nodes[..] {
-                args_used |= class.data.args_used;
-                cases.push(args.to_vec());
-            } else {
-                debug_assert!(cases.is_empty()); // inputs come before cases
-                input_args.push(arg);
-            }
-        }
-
-        assert!(!cases.is_empty());
-
+    for (id, mut spec, predicate, mut input_args, mut nested_scope) in switches {
         // If we know which case this switch will take, then wire up its results in place of
         // the switch's outputs.
-        if let Some((v, _)) = runner.egraph[*predicate].data.constant_fold {
-            cases.swap(0, v as usize);
-            cases.truncate(1);
+        if let Some((v, _)) = egraph[predicate].data.constant_fold {
+            let o = spec.outputs.get() as usize;
+            if v != 0 {
+                let (target, source) = nested_scope.split_at_mut(v as usize * o);
+                target[..o].copy_from_slice(&source[..o]);
+            }
+            nested_scope.truncate(o);
+            spec.cases = NonZeroU8::new(1).unwrap();
+            debug_assert_eq!(nested_scope.len(), spec.total_outputs());
         }
 
-        if cases.len() > 1 {
+        if spec.cases.get() > 1 {
             // Remove inputs which are either unused or are redundant with other inputs, and
             // rewrite the cases to use the revised argument order.
-            let mut dedup_args = Vec::with_capacity(args_used.count_ones());
+            let mut inputs_used = ArgsUsedData::ZERO;
+            for &output in nested_scope.iter() {
+                inputs_used |= egraph[output].data.args_used;
+            }
+
+            let mut dedup_args = Vec::with_capacity(inputs_used.count_ones());
             for (idx, arg) in input_args.iter().enumerate() {
-                if args_used[idx] && !dedup_args.contains(arg) {
+                if inputs_used[idx] && !dedup_args.contains(arg) {
                     dedup_args.push(*arg);
                 }
             }
@@ -329,31 +375,24 @@ fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> 
                         if old_idx != new_idx {
                             subst.insert(
                                 Get(old_idx as u8),
-                                runner.egraph.add(Op::Arg(Get(new_idx as u8))),
+                                egraph.add(Op::Arg(Get(new_idx as u8))),
                             );
                         }
                     }
                 }
 
-                for case in cases.iter_mut() {
-                    for output in case.iter_mut() {
-                        rewrite_args(&mut runner.egraph, &subst, output);
-                    }
+                for output in nested_scope.iter_mut() {
+                    rewrite_args(egraph, &subst, output);
                 }
+
+                input_args = dedup_args;
             }
-            input_args = dedup_args;
         }
 
         // Find outputs which are computed with equivalent expressions in every case.
-        let mut common_outputs = Vec::new();
-        for outputs in cases.iter() {
-            if common_outputs.is_empty() {
-                assert!(!outputs.is_empty());
-                common_outputs.extend(outputs.iter().copied().map(Some));
-                continue;
-            }
-
-            assert_eq!(common_outputs.len(), outputs.len());
+        let mut iter = nested_scope.chunks_exact(spec.outputs.get() as usize);
+        let mut common_outputs: Vec<_> = iter.next().unwrap().iter().copied().map(Some).collect();
+        for outputs in iter {
             for (seen, new) in common_outputs.iter_mut().zip(outputs.iter()) {
                 if *seen != Some(*new) {
                     *seen = None;
@@ -362,7 +401,7 @@ fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> 
         }
 
         let mut has_common = false;
-        let mut has_different = false;
+        let mut has_different = 0;
         let subst = input_args
             .iter()
             .enumerate()
@@ -370,35 +409,32 @@ fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> 
             .collect();
         for output in common_outputs.iter_mut() {
             if let Some(output) = output {
-                rewrite_args(&mut runner.egraph, &subst, output);
+                rewrite_args(egraph, &subst, output);
                 has_common = true;
             } else {
-                has_different = true;
+                has_different += 1;
             }
         }
 
-        debug_assert!(has_common || has_different);
+        debug_assert!(has_common || has_different != 0);
 
-        if has_common && has_different {
-            for outputs in cases.iter_mut() {
-                let mut iter = common_outputs.iter();
-                outputs.retain(|_| iter.next().unwrap().is_none());
+        let mut new_switch = id;
+
+        if let Some(outputs) = NonZeroU8::new(has_different) {
+            if has_common {
+                let mut iter = common_outputs.iter().cycle();
+                nested_scope.retain(|_| iter.next().unwrap().is_none());
+                spec.outputs = outputs;
+                debug_assert_eq!(nested_scope.len(), spec.total_outputs());
+            } else {
+                debug_assert_eq!(spec.outputs, outputs);
             }
-        }
 
-        let mut new_switch = *id;
-        if has_different {
-            let switch_args = std::iter::once(*predicate)
-                .chain(input_args.iter().copied())
-                .chain(
-                    cases
-                        .into_iter()
-                        .map(|outputs| runner.egraph.add(Op::Case(outputs.into_boxed_slice()))),
-                )
-                .collect::<Vec<Id>>();
-            new_switch = runner
-                .egraph
-                .add(Op::Switch(switch_args.into_boxed_slice()));
+            let switch_args = std::iter::once(predicate)
+                .chain(input_args)
+                .chain(nested_scope)
+                .collect::<Box<[Id]>>();
+            new_switch = egraph.add(Op::Switch(spec, switch_args));
 
             if has_common {
                 for (idx, output) in common_outputs
@@ -406,26 +442,26 @@ fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> 
                     .filter(|x| x.is_none())
                     .enumerate()
                 {
-                    *output = Some(runner.egraph.add(Op::Get(Get(idx as u8), new_switch)));
+                    *output = Some(egraph.add(Op::Get(Get(idx as u8), new_switch)));
                 }
             }
         }
 
         if has_common {
-            new_switch = runner.egraph.add(Op::Copy(
+            new_switch = egraph.add(Op::Copy(
                 common_outputs.into_iter().map(Option::unwrap).collect(),
             ));
         }
 
-        runner.egraph.union(*id, new_switch);
+        egraph.union(id, new_switch);
         // TODO: delete switch node from this class?
     }
 
     for (a, b) in unions {
-        runner.egraph.union(a, b);
+        egraph.union(a, b);
     }
 
-    runner.egraph.rebuild();
+    egraph.rebuild();
     Ok(())
 }
 
@@ -436,11 +472,11 @@ impl egg::CostFunction<Op> for OpCost {
 
     fn cost<C>(&mut self, enode: &Op, mut costs: C) -> Self::Cost
     where
-        C: FnMut(Id) -> Self::Cost
+        C: FnMut(Id) -> Self::Cost,
     {
         let base_cost = match enode {
             Op::Arg(_) | Op::Const(_) => 0,
-            Op::Switch(args) | Op::Case(args) => args.len(),
+            Op::Loop(args) | Op::Switch(_, args) => args.len(),
             // give everything else equal costs for now
             _ => 1,
         };
