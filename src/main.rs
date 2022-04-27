@@ -295,10 +295,10 @@ fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> 
         for &arg in switch_args.iter() {
             let class = &runner.egraph[arg];
             if let [Op::Case(args)] = &class.nodes[..] {
-                debug_assert!(input_args.is_empty()); // cases come before inputs
                 args_used |= class.data.args_used;
                 cases.push(args.to_vec());
             } else {
+                debug_assert!(cases.is_empty()); // inputs come before cases
                 input_args.push(arg);
             }
         }
@@ -389,12 +389,12 @@ fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> 
         let mut new_switch = *id;
         if has_different {
             let switch_args = std::iter::once(*predicate)
+                .chain(input_args.iter().copied())
                 .chain(
                     cases
                         .into_iter()
                         .map(|outputs| runner.egraph.add(Op::Case(outputs.into_boxed_slice()))),
                 )
-                .chain(input_args.iter().copied())
                 .collect::<Vec<Id>>();
             new_switch = runner
                 .egraph
