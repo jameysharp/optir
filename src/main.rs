@@ -40,10 +40,10 @@ define_language! {
 
         // An RVSDG "theta" node representing a structured tail-controlled loop. The first operand
         // is the predicate indicating whether the loop should continue for another iteration. The
-        // remaining operands are pairs of (input, result). The input is available in the first
-        // iteration as the corresponding argument; on subsequent iterations that argument comes
-        // from the corresponding result of the previous iteration. After the final iteration, the
-        // result is available as a corresponding output of the loop.
+        // remaining operands are N inputs, followed by N results. The input is available in the
+        // first iteration as the corresponding argument; on subsequent iterations that argument
+        // comes from the corresponding result of the previous iteration. After the final
+        // iteration, the result is available as a corresponding output of the loop.
         "loop" = Loop(Box<[Id]>),
 
         // An RVSDG "gamma" node representing a structured generalized if-then-else block. The
@@ -139,11 +139,21 @@ impl egg::Analysis<Op> for Analysis {
             match enode {
                 Op::Arg(idx) => result.set(idx.0 as usize, true),
 
+                // Arguments used in loop outputs are in a different scope than the loop itself.
+                Op::Loop(args) => {
+                    let inputs = args.len() / 2;
+                    for &child in args[..1 + inputs].iter() {
+                        result |= egraph[child].data.args_used;
+                    }
+                }
+
                 // TODO: identify more precise dependencies when selecting from tuples produced by
                 // control-flow or copy nodes
                 _ => {
                     for &child in enode.children() {
                         let child = &egraph[child];
+                        // Arguments used in switch cases are in a different scope than the
+                        // surrounding switch.
                         if !matches!(&child.nodes[..], [Op::Case(_)]) {
                             result |= child.data.args_used;
                         }
@@ -221,13 +231,30 @@ fn rewrite_args(egraph: &mut EGraph, subst: &HashMap<Get, Id>, id: &mut Id) {
 
     let mut nodes: Vec<Op> = class.iter().cloned().collect();
     for node in nodes.iter_mut() {
-        if let Op::Arg(idx) = node {
-            *id = subst[idx];
-            return;
-        }
+        match node {
+            Op::Arg(idx) => {
+                *id = subst[idx];
+                return;
+            }
 
-        for child in node.children_mut() {
-            rewrite_args(egraph, subst, child);
+            // Don't rewrite inside switch cases or loop outputs, because those are in a separate scope.
+            Op::Case(_) => {
+                // A switch case is never equivalent to anything else.
+                debug_assert_eq!(nodes.len(), 1);
+                return;
+            }
+            Op::Loop(args) => {
+                let inputs = args.len() / 2;
+                for child in args[..1 + inputs].iter_mut() {
+                    rewrite_args(egraph, subst, child);
+                }
+            }
+
+            _ => {
+                for child in node.children_mut() {
+                    rewrite_args(egraph, subst, child);
+                }
+            }
         }
     }
 
