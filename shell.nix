@@ -8,7 +8,5 @@ in pkgs.mkShell {
   nativeBuildInputs = [
     pkgs.rust-bin.stable.latest.default
     pkgs.cargo-edit
-    pkgs.z3.dev
   ];
-  LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
 }
