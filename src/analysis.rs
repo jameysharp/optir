@@ -7,7 +7,6 @@ type EGraph = egg::EGraph<Op, Analysis>;
 type ConstantFoldData = Option<(i32, PatternAst<Op>)>;
 pub type ArgsUsedData = bitvec::BitArr!(for u8::MAX as usize);
 
-#[derive(Debug)]
 pub struct AnalysisResults {
     args_used: ArgsUsedData,
     constant_fold: ConstantFoldData,
@@ -20,6 +19,22 @@ impl AnalysisResults {
 
     pub fn constant_fold(&self) -> Option<i32> {
         self.constant_fold.as_ref().map(|(v, _)| *v)
+    }
+}
+
+impl std::fmt::Debug for AnalysisResults {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnalysisResults { constant_fold: Some((v, pat)), args_used } => {
+                debug_assert!(args_used.not_any());
+                write!(f, "constant fold: {} => {}", pat, v)
+            }
+
+            AnalysisResults { constant_fold: None, args_used } => {
+                f.write_str("args used: ")?;
+                f.debug_set().entries(args_used.iter_ones()).finish()
+            }
+        }
     }
 }
 

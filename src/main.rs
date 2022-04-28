@@ -18,6 +18,7 @@ fn main() -> std::io::Result<()> {
 
     runner = runner.run(&rewrite::rules());
     runner.print_report();
+    println!("{:?}", runner.egraph.dump());
 
     let extractor = egg::Extractor::new(&runner.egraph, extract::OpCost);
 
