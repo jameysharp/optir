@@ -9,11 +9,15 @@ pub type ArgsUsedData = bitvec::BitArr!(for u8::MAX as usize);
 
 #[derive(Debug)]
 pub struct AnalysisResults {
+    args_used: ArgsUsedData,
     constant_fold: ConstantFoldData,
-    pub args_used: ArgsUsedData,
 }
 
 impl AnalysisResults {
+    pub fn args_used(&self) -> &ArgsUsedData {
+        &self.args_used
+    }
+
     pub fn constant_fold(&self) -> Option<i32> {
         self.constant_fold.as_ref().map(|(v, _)| *v)
     }
@@ -29,7 +33,7 @@ fn make_args_used(egraph: &EGraph, enode: &Op) -> ArgsUsedData {
 
         _ => {
             for &child in enode.same_scope_children() {
-                result |= egraph[child].data.args_used;
+                result |= egraph[child].data.args_used();
             }
         }
     }
@@ -56,7 +60,7 @@ impl egg::Analysis<Op> for Analysis {
             // remove nodes which use more arguments than the minimum.
 
             // Prove the assumption, that the minimum is a subset, by checking the intersection.
-            debug_assert_eq!((&*to).min(&from), &{
+            debug_assert_eq!((&from).min(to), &{
                 let mut tmp = from;
                 tmp &= &*to;
                 tmp
@@ -135,7 +139,7 @@ impl egg::Analysis<Op> for Analysis {
             // same result, giving a more precise analysis result than we'd previously discovered.
             // Pruning the less-precise alternatives may expose more opportunities for rewrites.
             // However, we keep all alternatives that have the same precision.
-            let args_used = &class.data.args_used;
+            let args_used = class.data.args_used();
             let keep: bitvec::vec::BitVec = class
                 .iter()
                 .map(|node| args_used == &make_args_used(egraph, node))
@@ -146,7 +150,7 @@ impl egg::Analysis<Op> for Analysis {
             }
         } else {
             debug_assert_eq!(
-                &class.data.args_used,
+                class.data.args_used(),
                 &make_args_used(egraph, &class.nodes[0])
             );
         }

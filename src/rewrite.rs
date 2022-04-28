@@ -48,7 +48,7 @@ pub fn rules() -> Vec<Rewrite> {
 
 fn rewrite_args(egraph: &mut EGraph, subst: &HashMap<Get, Id>, id: &mut Id) {
     let class = &egraph[*id];
-    let args_used = &class.data.args_used;
+    let args_used = class.data.args_used();
     if subst.keys().all(|idx| !args_used[idx.0 as usize]) {
         return;
     }
@@ -124,7 +124,7 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
             // rewrite the cases to use the revised argument order.
             let mut inputs_used = ArgsUsedData::ZERO;
             for &output in nested_scope.iter() {
-                inputs_used |= egraph[output].data.args_used;
+                inputs_used |= egraph[output].data.args_used();
             }
 
             let mut dedup_args = Vec::with_capacity(inputs_used.count_ones());
