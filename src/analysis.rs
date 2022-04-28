@@ -4,13 +4,19 @@ use crate::language::Op;
 
 type EGraph = egg::EGraph<Op, Analysis>;
 
-pub type ConstantFoldData = Option<(i32, PatternAst<Op>)>;
+type ConstantFoldData = Option<(i32, PatternAst<Op>)>;
 pub type ArgsUsedData = bitvec::BitArr!(for u8::MAX as usize);
 
 #[derive(Debug)]
 pub struct AnalysisResults {
-    pub constant_fold: ConstantFoldData,
+    constant_fold: ConstantFoldData,
     pub args_used: ArgsUsedData,
+}
+
+impl AnalysisResults {
+    pub fn constant_fold(&self) -> Option<i32> {
+        self.constant_fold.as_ref().map(|(v, _)| *v)
+    }
 }
 
 #[derive(Default)]

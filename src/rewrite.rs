@@ -11,7 +11,7 @@ type EGraph = egg::EGraph<Op, Analysis>;
 fn is_power_of_two(var: &str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
     let var = var.parse().unwrap();
     move |egraph, _, subst| {
-        if let Some((c, _)) = egraph[subst[var]].data.constant_fold {
+        if let Some(c) = egraph[subst[var]].data.constant_fold() {
             c & (c - 1) == 0
         } else {
             false
@@ -108,7 +108,7 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
     for (id, mut spec, predicate, mut input_args, mut nested_scope) in switches {
         // If we know which case this switch will take, then wire up its results in place of
         // the switch's outputs.
-        if let Some((v, _)) = egraph[predicate].data.constant_fold {
+        if let Some(v) = egraph[predicate].data.constant_fold() {
             let o = spec.outputs.get() as usize;
             if v != 0 {
                 let (target, source) = nested_scope.split_at_mut(v as usize * o);
