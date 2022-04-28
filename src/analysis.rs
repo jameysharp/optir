@@ -24,16 +24,16 @@ impl AnalysisResults {
 
 impl std::fmt::Debug for AnalysisResults {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AnalysisResults { constant_fold: Some((v, pat)), args_used } => {
-                debug_assert!(args_used.not_any());
-                write!(f, "constant fold: {} => {}", pat, v)
-            }
-
-            AnalysisResults { constant_fold: None, args_used } => {
-                f.write_str("args used: ")?;
-                f.debug_set().entries(args_used.iter_ones()).finish()
-            }
+        let AnalysisResults {
+            args_used,
+            constant_fold,
+        } = self;
+        if let Some((v, pat)) = constant_fold {
+            debug_assert!(args_used.not_any());
+            write!(f, "constant fold: {} => {}", pat, v)
+        } else {
+            f.write_str("args used: ")?;
+            f.debug_set().entries(args_used.iter_ones()).finish()
         }
     }
 }
@@ -75,11 +75,7 @@ impl egg::Analysis<Op> for Analysis {
             // remove nodes which use more arguments than the minimum.
 
             // Prove the assumption, that the minimum is a subset, by checking the intersection.
-            debug_assert_eq!((&from).min(to), &{
-                let mut tmp = from;
-                tmp &= &*to;
-                tmp
-            });
+            debug_assert_eq!((&from).min(to), &(from & &*to));
             egg::merge_min(to, from)
         }
 
