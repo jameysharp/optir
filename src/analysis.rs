@@ -44,7 +44,7 @@ pub struct Analysis;
 fn make_args_used(egraph: &EGraph, enode: &Op) -> ArgsUsedData {
     let mut result = ArgsUsedData::ZERO;
     match enode {
-        Op::Arg(idx) => result.set(idx.0 as usize, true),
+        &Op::Arg(idx) => result.set(idx.into(), true),
 
         _ => {
             for &child in enode.same_scope_children() {

@@ -49,7 +49,7 @@ pub fn rules() -> Vec<Rewrite> {
 fn rewrite_args(egraph: &mut EGraph, subst: &HashMap<Get, Id>, id: &mut Id) {
     let class = &egraph[*id];
     let args_used = class.data.args_used();
-    if subst.keys().all(|idx| !args_used[idx.0 as usize]) {
+    if subst.keys().all(|&idx| !args_used[usize::from(idx)]) {
         return;
     }
 
@@ -96,7 +96,7 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
                 &Op::Get(idx, src) => {
                     for node in egraph[src].iter() {
                         if let Op::Copy(args) = node {
-                            unions.push((class.id, args[idx.0 as usize]));
+                            unions.push((class.id, args[usize::from(idx)]));
                         }
                     }
                 }
@@ -140,8 +140,8 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
                     if let Some(new_idx) = dedup_args.iter().position(|new| *new == old) {
                         if old_idx != new_idx {
                             subst.insert(
-                                Get(old_idx as u8),
-                                egraph.add(Op::Arg(Get(new_idx as u8))),
+                                old_idx.try_into().unwrap(),
+                                egraph.add(Op::Arg(new_idx.try_into().unwrap())),
                             );
                         }
                     }
@@ -171,7 +171,7 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
         let subst = input_args
             .iter()
             .enumerate()
-            .map(|(idx, arg)| (Get(idx as u8), *arg))
+            .map(|(idx, arg)| (idx.try_into().unwrap(), *arg))
             .collect();
         for output in common_outputs.iter_mut() {
             if let Some(output) = output {
@@ -208,7 +208,7 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
                     .filter(|x| x.is_none())
                     .enumerate()
                 {
-                    *output = Some(egraph.add(Op::Get(Get(idx as u8), new_switch)));
+                    *output = Some(egraph.add(Op::Get(idx.try_into().unwrap(), new_switch)));
                 }
             }
         }

@@ -2,7 +2,7 @@ use egg::{define_language, Id, Language};
 use std::num::NonZeroU8;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Get(pub u8);
+pub struct Get(u8);
 
 impl std::fmt::Display for Get {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
@@ -18,6 +18,20 @@ impl std::str::FromStr for Get {
         Ok(Get(suffix
             .parse()
             .map_err(|_| "output index isn't a number")?))
+    }
+}
+
+impl std::convert::TryFrom<usize> for Get {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        u8::try_from(value).map(Get)
+    }
+}
+
+impl From<Get> for usize {
+    fn from(value: Get) -> Self {
+        value.0.into()
     }
 }
 
