@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU8;
 
 use crate::analysis::{Analysis, ArgsUsedData};
-use crate::language::{Get, Op};
+use crate::language::{Get, Op, Switch};
 
 type Rewrite = egg::Rewrite<Op, Analysis>;
 type EGraph = egg::EGraph<Op, Analysis>;
@@ -105,122 +105,8 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
         }
     }
 
-    for (id, mut spec, predicate, mut input_args, mut nested_scope) in switches {
-        // If we know which case this switch will take, then wire up its results in place of
-        // the switch's outputs.
-        if let Some(v) = egraph[predicate].data.constant_fold() {
-            let o = spec.outputs.get() as usize;
-            if v != 0 {
-                let (target, source) = nested_scope.split_at_mut(v as usize * o);
-                target[..o].copy_from_slice(&source[..o]);
-            }
-            nested_scope.truncate(o);
-            spec.cases = NonZeroU8::new(1).unwrap();
-            debug_assert_eq!(nested_scope.len(), spec.total_outputs());
-        }
-
-        if spec.cases.get() > 1 {
-            // Remove inputs which are either unused or are redundant with other inputs, and
-            // rewrite the cases to use the revised argument order.
-            let mut inputs_used = ArgsUsedData::ZERO;
-            for &output in nested_scope.iter() {
-                inputs_used |= egraph[output].data.args_used();
-            }
-
-            let mut dedup_args = Vec::with_capacity(inputs_used.count_ones());
-            for (idx, arg) in input_args.iter().enumerate() {
-                if inputs_used[idx] && !dedup_args.contains(arg) {
-                    dedup_args.push(*arg);
-                }
-            }
-
-            if dedup_args != input_args {
-                let mut subst = HashMap::new();
-                for (old_idx, old) in input_args.into_iter().enumerate() {
-                    if let Some(new_idx) = dedup_args.iter().position(|new| *new == old) {
-                        if old_idx != new_idx {
-                            subst.insert(
-                                old_idx.try_into().unwrap(),
-                                egraph.add(Op::Arg(new_idx.try_into().unwrap())),
-                            );
-                        }
-                    }
-                }
-
-                for output in nested_scope.iter_mut() {
-                    rewrite_args(egraph, &subst, output);
-                }
-
-                input_args = dedup_args;
-            }
-        }
-
-        // Find outputs which are computed with equivalent expressions in every case.
-        let mut iter = nested_scope.chunks_exact(spec.outputs.get() as usize);
-        let mut common_outputs: Vec<_> = iter.next().unwrap().iter().copied().map(Some).collect();
-        for outputs in iter {
-            for (seen, new) in common_outputs.iter_mut().zip(outputs.iter()) {
-                if *seen != Some(*new) {
-                    *seen = None;
-                }
-            }
-        }
-
-        let mut has_common = false;
-        let mut has_different = 0;
-        let subst = input_args
-            .iter()
-            .enumerate()
-            .map(|(idx, arg)| (idx.try_into().unwrap(), *arg))
-            .collect();
-        for output in common_outputs.iter_mut() {
-            if let Some(output) = output {
-                rewrite_args(egraph, &subst, output);
-                has_common = true;
-            } else {
-                has_different += 1;
-            }
-        }
-
-        debug_assert!(has_common || has_different != 0);
-
-        let mut new_switch = id;
-
-        if let Some(outputs) = NonZeroU8::new(has_different) {
-            if has_common {
-                let mut iter = common_outputs.iter().cycle();
-                nested_scope.retain(|_| iter.next().unwrap().is_none());
-                spec.outputs = outputs;
-                debug_assert_eq!(nested_scope.len(), spec.total_outputs());
-            } else {
-                debug_assert_eq!(spec.outputs, outputs);
-            }
-
-            let switch_args = std::iter::once(predicate)
-                .chain(input_args)
-                .chain(nested_scope)
-                .collect::<Box<[Id]>>();
-            new_switch = egraph.add(Op::Switch(spec, switch_args));
-
-            if has_common {
-                for (idx, output) in common_outputs
-                    .iter_mut()
-                    .filter(|x| x.is_none())
-                    .enumerate()
-                {
-                    *output = Some(egraph.add(Op::Get(idx.try_into().unwrap(), new_switch)));
-                }
-            }
-        }
-
-        if has_common {
-            new_switch = egraph.add(Op::Copy(
-                common_outputs.into_iter().map(Option::unwrap).collect(),
-            ));
-        }
-
-        egraph.union(id, new_switch);
-        // TODO: delete switch node from this class?
+    for (id, spec, predicate, input_args, nested_scope) in switches {
+        rewrite_switch(egraph, id, spec, predicate, input_args, nested_scope);
     }
 
     for (a, b) in unions {
@@ -229,4 +115,129 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
 
     egraph.rebuild();
     Ok(())
+}
+
+fn rewrite_switch(
+    egraph: &mut EGraph,
+    id: Id,
+    mut spec: Switch,
+    predicate: Id,
+    mut input_args: Vec<Id>,
+    mut nested_scope: Vec<Id>,
+) {
+    // If we know which case this switch will take, then wire up its results in place of the
+    // switch's outputs.
+    if let Some(v) = egraph[predicate].data.constant_fold() {
+        let o = spec.outputs.get() as usize;
+        if v != 0 {
+            let (target, source) = nested_scope.split_at_mut(v as usize * o);
+            target[..o].copy_from_slice(&source[..o]);
+        }
+        nested_scope.truncate(o);
+        spec.cases = NonZeroU8::new(1).unwrap();
+        debug_assert_eq!(nested_scope.len(), spec.total_outputs());
+    }
+
+    if spec.cases.get() > 1 {
+        // Remove inputs which are either unused or are redundant with other inputs, and rewrite
+        // the cases to use the revised argument order.
+        let mut inputs_used = ArgsUsedData::ZERO;
+        for &output in nested_scope.iter() {
+            inputs_used |= egraph[output].data.args_used();
+        }
+
+        let mut dedup_args = Vec::with_capacity(inputs_used.count_ones());
+        for (idx, arg) in input_args.iter().enumerate() {
+            if inputs_used[idx] && !dedup_args.contains(arg) {
+                dedup_args.push(*arg);
+            }
+        }
+
+        if dedup_args != input_args {
+            let mut subst = HashMap::new();
+            for (old_idx, old) in input_args.into_iter().enumerate() {
+                if let Some(new_idx) = dedup_args.iter().position(|new| *new == old) {
+                    if old_idx != new_idx {
+                        subst.insert(
+                            old_idx.try_into().unwrap(),
+                            egraph.add(Op::Arg(new_idx.try_into().unwrap())),
+                        );
+                    }
+                }
+            }
+
+            for output in nested_scope.iter_mut() {
+                rewrite_args(egraph, &subst, output);
+            }
+
+            input_args = dedup_args;
+        }
+    }
+
+    // Find outputs which are computed with equivalent expressions in every case.
+    let mut iter = nested_scope.chunks_exact(spec.outputs.get() as usize);
+    let mut common_outputs: Vec<_> = iter.next().unwrap().iter().copied().map(Some).collect();
+    for outputs in iter {
+        for (seen, new) in common_outputs.iter_mut().zip(outputs.iter()) {
+            if *seen != Some(*new) {
+                *seen = None;
+            }
+        }
+    }
+
+    let mut has_common = false;
+    let mut has_different = 0;
+    let subst = input_args
+        .iter()
+        .enumerate()
+        .map(|(idx, arg)| (idx.try_into().unwrap(), *arg))
+        .collect();
+    for output in common_outputs.iter_mut() {
+        if let Some(output) = output {
+            rewrite_args(egraph, &subst, output);
+            has_common = true;
+        } else {
+            has_different += 1;
+        }
+    }
+
+    debug_assert!(has_common || has_different != 0);
+
+    let mut new_switch = id;
+
+    if let Some(outputs) = NonZeroU8::new(has_different) {
+        if has_common {
+            let mut iter = common_outputs.iter().cycle();
+            nested_scope.retain(|_| iter.next().unwrap().is_none());
+            spec.outputs = outputs;
+            debug_assert_eq!(nested_scope.len(), spec.total_outputs());
+        } else {
+            debug_assert_eq!(spec.outputs, outputs);
+        }
+
+        let switch_args = std::iter::once(predicate)
+            .chain(input_args)
+            .chain(nested_scope)
+            .collect::<Box<[Id]>>();
+        new_switch = egraph.add(Op::Switch(spec, switch_args));
+
+        if has_common {
+            for (idx, output) in common_outputs
+                .iter_mut()
+                .filter(|x| x.is_none())
+                .enumerate()
+            {
+                *output = Some(egraph.add(Op::Get(idx.try_into().unwrap(), new_switch)));
+            }
+        }
+    }
+
+    if has_common {
+        new_switch = egraph.add(Op::Copy(
+            common_outputs.into_iter().map(Option::unwrap).collect(),
+        ));
+    }
+
+    egraph.union(id, new_switch);
+    // TODO: delete switch node from this class?
 }
