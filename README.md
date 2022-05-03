@@ -19,6 +19,13 @@ There are several kinds of operators:
 - The control flow operators `loop` and `switch` and nullary `get-N`,
   described below
 
+The input can also contain let-bindings, such as `(?x 21 (+ ?x ?x))`,
+which is equivalent to `(+ 21 21)`. This is purely for convenience:
+recusrive definitions aren't allowed, so let-bindings are exactly
+equivalent to writing out the bound expression everywhere the name is
+used. Even without let-bindings, the dataflow graph is hash-consed so
+repeated expressions get shared internally.
+
 Control flow is based on the Regionalized Value State Dependence Graph
 (RVSDG), as described in ["RVSDG: An Intermediate Representation for
 Optimizing Compilers"][rvsdg-2020] and other papers. (["Perfect
@@ -51,11 +58,13 @@ four inputs and four outputs. I've grouped the inputs and each case on
 separate lines.
 
 ```lisp
-(switch-2-cases-4-outputs
-get-9
-get-5 get-6 get-6 get-7
-get-0 get-0 get-1 (get-0 (switch-2-cases-1-outputs 0 get-1 get-3 get-0 get-1))
-get-0 get-1 get-2 get-1)
+(?nested (switch-2-cases-1-outputs 0 get-1 get-3 get-0 get-1)
+  (switch-2-cases-4-outputs
+  get-9
+  get-5 get-6 get-6 get-7
+  get-0 get-0 get-1 (get-0 ?nested)
+  get-0 get-1 get-2 get-1)
+)
 ```
 
 This example can be simplified quite a bit without changing its outputs.

@@ -3,14 +3,18 @@
 use std::io::Read;
 
 mod analysis;
+mod bind;
 mod extract;
 mod language;
 mod rewrite;
+
+use bind::resolve_bindings;
 
 fn main() -> std::io::Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
     let input = input.parse().unwrap();
+    let input = resolve_bindings(&input);
 
     let mut runner = egg::Runner::default()
         .with_expr(&input)
