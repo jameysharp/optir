@@ -48,10 +48,13 @@ pub fn rules() -> Vec<Rewrite> {
 
 fn rewrite_args(egraph: &mut EGraph, subst: &HashMap<Get, Id>, id: &mut Id) {
     let mut args_used = ArgsUsedData::ZERO;
-    let subst = subst.iter().map(|(&from, &to)| {
-        args_used.set(from.into(), true);
-        (egraph.add(Op::Arg(from)), to)
-    }).collect();
+    let subst = subst
+        .iter()
+        .map(|(&from, &to)| {
+            args_used.set(from.into(), true);
+            (egraph.add(Op::Arg(from)), to)
+        })
+        .collect();
     rewrite_exprs(egraph, &args_used, &subst, id);
 }
 

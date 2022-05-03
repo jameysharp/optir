@@ -1,4 +1,4 @@
-use egg::{Id, FromOp, Language, RecExpr, Var};
+use egg::{FromOp, Id, Language, RecExpr, Var};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -47,7 +47,12 @@ impl<L: FromOp> FromOp for Binding<L> {
 }
 
 pub fn resolve_bindings<L: Language + Clone>(input: &RecExpr<Binding<L>>) -> RecExpr<L> {
-    fn go<L: Language + Clone>(result: &mut Vec<L>, input: &[Binding<L>], id: Id, mut symbol_table: Rc<HashMap<Var, Id>>) -> Id {
+    fn go<L: Language + Clone>(
+        result: &mut Vec<L>,
+        input: &[Binding<L>],
+        id: Id,
+        mut symbol_table: Rc<HashMap<Var, Id>>,
+    ) -> Id {
         match &input[usize::from(id)] {
             Binding::Use(var) => symbol_table[var],
 
@@ -72,6 +77,11 @@ pub fn resolve_bindings<L: Language + Clone>(input: &RecExpr<Binding<L>>) -> Rec
     let input = input.as_ref();
     let input_len = input.len();
     let mut result = Vec::with_capacity(input_len);
-    go(&mut result, input, (input_len - 1).try_into().unwrap(), Rc::new(HashMap::new()));
+    go(
+        &mut result,
+        input,
+        (input_len - 1).try_into().unwrap(),
+        Rc::new(HashMap::new()),
+    );
     RecExpr::from(result)
 }
