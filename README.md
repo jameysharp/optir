@@ -106,8 +106,50 @@ the previous iteration.
 Inside the expression for a result or predicate, nullary `get-N` refers
 to the Nth argument to the loop body in the current iteration.
 
-Currently, optir doesn't do any loop optimizations, so I haven't really
-tested this operator.
+Here's an expression to compute the nth natural power of x, if x and n
+are provided as inputs 0 and 1, respectively:
+
+```lisp
+(get-2
+  (loop
+  get-0 get-1 1
+  (* get-0 get-0)
+  (>> get-1 1)
+  (get-0 (switch-2-cases-1-outputs (& get-1 1) get-0 get-2 get-1 (* get-1 get-0)))
+  get-1)
+)
+```
+
+Currently, optir does several loop optimizations, but I haven't really
+tested them.
+
+- If the loop's predicate is always false on the first iteration, then
+  the loop body always runs exactly once and we can inline it into the
+  surrounding code.
+
+- If we can prove inductively that some pair of loop variables `x` and
+  `y` have equivalent values at the boundaries of every loop iteration,
+  then we can replace every use of `y` with `x`, both inside and after
+  the loop. This generalizes to larger groups of variables.
+
+- Loop-Invariant Code Motion: any expression in the loop body which
+  depends only on loop-invariant variables can be hoisted out of the
+  loop as a new loop-invariant input.
+
+- Any uses of loop-invariant variables after the loop are replaced by
+  the corresponding loop inputs, which can expose more opportunities to
+  apply algebraic identities. Then, loop-invariant variables which are
+  not used in the body of the loop are removed from the loop.
+
+I think these optimizations are all easier on the RVSDG than they would
+be on a control-flow graph. Together they're implemented in under 300
+lines of Rust, and rely only on a couple of very simple bottom-up
+dataflow analyses. The underlying graph implementation supports cheap
+checks for whether two expressions are equivalent, modulo a given set of
+rewrite rules, which helps a lot.
+
+Loop peeling looks easy to do in this framework too, but I haven't tried
+implementing it yet.
 
 # e-graphs good
 
