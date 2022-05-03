@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 bitvec = "1.0.0"
 egg = "0.7.1"
+smallvec = { version = "1.8.0", features = ["union", "const_generics"] }

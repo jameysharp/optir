@@ -1,8 +1,11 @@
 use egg::{define_language, Id, Language};
+use std::mem::size_of;
 use std::num::NonZeroU8;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Get(u8);
+
+pub type GetVec = smallvec::SmallVec<[Get; size_of::<usize>() * 2 / size_of::<Get>()]>;
 
 impl std::fmt::Display for Get {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
@@ -32,6 +35,20 @@ impl std::convert::TryFrom<usize> for Get {
 impl From<Get> for usize {
     fn from(value: Get) -> Self {
         value.0.into()
+    }
+}
+
+impl std::ops::Sub<usize> for Get {
+    type Output = Get;
+
+    fn sub(self, other: usize) -> Self {
+        (usize::from(self) - other).try_into().unwrap()
+    }
+}
+
+impl std::ops::SubAssign<usize> for Get {
+    fn sub_assign(&mut self, other: usize) {
+        *self = *self - other;
     }
 }
 
