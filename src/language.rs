@@ -99,6 +99,35 @@ impl std::str::FromStr for Switch {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Signature {
+    pub inputs: u8,
+    pub outputs: u8,
+}
+
+impl std::fmt::Display for Signature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "func-{}-inputs-{}-outputs", self.inputs, self.outputs)
+    }
+}
+
+impl std::str::FromStr for Signature {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, &'static str> {
+        s.strip_prefix("func-")
+            .and_then(|suf| suf.strip_suffix("-outputs"))
+            .and_then(|suf| suf.split_once("-inputs-"))
+            .and_then(|(inputs, outputs)| {
+                inputs
+                    .parse()
+                    .and_then(|inputs| outputs.parse().map(|outputs| Signature { inputs, outputs }))
+                    .ok()
+            })
+            .ok_or("not in 'func-N-inputs-M-outputs' format")
+    }
+}
+
 define_language! {
     pub enum Op {
         "+" = Add([Id; 2]),
@@ -128,6 +157,12 @@ define_language! {
         // "switch" node.
         Switch(Switch, Box<[Id]>),
 
+        // An RVSDG "lambda" node representing the definition of an anonymous function having the
+        // specified input and output signature. The last operands are the output expressions; if
+        // there are more operands before that, they are compile-time constant inputs which are
+        // implicitly appended to the caller's inputs on every call.
+        Function(Signature, Box<[Id]>),
+
         // A node representing the arguments of the nearest enclosing structured control block,
         // such as "loop" or "case". The operational semantics depend on which block transitively
         // demanded the value of this node at the current point of evaluation.
@@ -150,6 +185,12 @@ impl Op {
             }
 
             Op::Switch(spec, args) => spec.split_scope(args).0,
+
+            Op::Function(sig, args) => {
+                let const_inputs = args.len().checked_sub(sig.outputs.into()).unwrap();
+                &args[..const_inputs]
+            }
+
             _ => self.children(),
         }
     }
@@ -163,6 +204,12 @@ impl Op {
             }
 
             Op::Switch(spec, args) => spec.split_scope_mut(args).0,
+
+            Op::Function(sig, args) => {
+                let const_inputs = args.len().checked_sub(sig.outputs.into()).unwrap();
+                &mut args[..const_inputs]
+            }
+
             _ => self.children_mut(),
         }
     }

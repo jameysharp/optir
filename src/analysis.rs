@@ -96,6 +96,7 @@ impl egg::Analysis<Op> for Analysis {
                 Op::ShiftRightSign([l, r]) => c(l)? >> c(r)?,
                 Op::BitAnd([l, r]) => c(l)? & c(r)?,
                 Op::Copy(_) => return None,
+                Op::Function(_, _) => return None,
                 Op::Loop(_) => return None,
                 Op::Switch(_, _) => return None,
                 Op::Arg(_) => return None,
@@ -159,11 +160,6 @@ impl egg::Analysis<Op> for Analysis {
                 let mut iter = keep.into_iter();
                 egraph[id].nodes.retain(|_| iter.next().unwrap());
             }
-        } else {
-            debug_assert_eq!(
-                class.data.args_used(),
-                &make_args_used(egraph, &class.nodes[0])
-            );
         }
     }
 }

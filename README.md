@@ -16,8 +16,8 @@ There are several kinds of operators:
 - The `copy` operator, whose result is a tuple of its operands
 - The `get-N` unary operator to extract the Nth result from a tuple:
   `(get-1 (copy 1 2 3))` is equivalent to `2`
-- The control flow operators `loop` and `switch` and nullary `get-N`,
-  described below
+- The control flow operators, described below: `func`, `loop`, and
+  `switch`, and nullary `get-N`
 
 The input can also contain let-bindings, such as `(?x 21 (+ ?x ?x))`,
 which is equivalent to `(+ 21 21)`. This is purely for convenience:
@@ -37,6 +37,34 @@ control flow graphs.)
 [rvsdg-2020]: https://arxiv.org/abs/1912.05036
 [control-flow]: https://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.687.6305
 
+## `func` operator
+
+The `func-N-inputs-M-outputs` operator defines an anonymous function
+which, when called, takes N inputs and produces M outputs. (It's called
+"lambda" in the RVSDG papers.) Its operands are, in order:
+
+- zero or more constant inputs, always appended to the N inputs from the
+  caller,
+- and M output expressions.
+
+Within the output expressions, the inputs are available by means of the
+`get-N` nullary operator. The constant inputs are intended primarily for
+passing in the definitions of other functions. At the moment there's
+nothing you can do with that which you couldn't do using let-bindings,
+but once RVSDG "phi" nodes are implemented to allow mutually recursive
+functions this should be useful.
+
+The result of evaluating one of these operators is effectively the
+"address" of the function. Using it requires passing this address and
+any inputs to a separate `call` operator (not yet implemented).
+
+Here's a function which just returns the difference of its two
+arguments:
+
+```lisp
+(func-2-inputs-1-outputs (+ get-0 (* -1 get-1)))
+```
+
 ## `switch` operator
 
 The `switch-N-cases-M-outputs` operator is a generalized form of
@@ -53,27 +81,29 @@ of that case. Within the expression for an output, you can use the
 nullary `get-N` operator to refer to the Nth input to the enclosing
 `switch`.
 
-Here's a complex example where the predicate is `get-9`, and there are
+Here's a complex example where the predicate is `get-0`, and there are
 four inputs and four outputs. I've grouped the inputs and each case on
 separate lines.
 
 ```lisp
 (?nested (switch-2-cases-1-outputs 0 get-1 get-3 get-0 get-1)
-  (switch-2-cases-4-outputs
-  get-9
-  get-5 get-6 get-6 get-7
+(?outer (switch-2-cases-4-outputs
+  get-0
+  get-1 get-2 get-2 get-3
   get-0 get-0 get-1 (get-0 ?nested)
   get-0 get-1 get-2 get-1)
-)
+(func-4-inputs-4-outputs (get-0 ?outer) (get-1 ?outer) (get-2 ?outer) (get-3 ?outer))
+))
 ```
 
-This example can be simplified quite a bit without changing its outputs.
-For example,
+This example can be simplified quite a bit without changing the
+function's outputs. For example,
 
-- output 0 is always equal to input 0 (which is `get-5`) regardless of
-  which case is evaluated;
-- input 1 is equal to input 2, so within the outputs, any use of `get-2`
-  can be replaced with `get-1`;
+- output 0 is always equal to switch input 0 (which is `get-1`, or the
+  second argument of the function) regardless of which case is
+  evaluated;
+- switch inputs 1 and 2 are equivalent, so within the switch outputs,
+  any use of `get-2` can be replaced with `get-1`;
 - the inner `switch` has a constant predicate so it can be replaced with
   the outputs of its case 0;
 - after the inner `switch` is simplified, the outer switch's input 3 is
@@ -84,11 +114,11 @@ few other similar cases to reduce that example to this equivalent
 expression:
 
 ```lisp
-(copy
-get-5
-(get-0 (switch-2-cases-1-outputs get-9 get-5 get-6 get-0 get-1))
-get-6
-get-6)
+(func-4-inputs-4-outputs
+get-1
+(get-0 (switch-2-cases-1-outputs get-0 get-1 get-2 get-0 get-1))
+get-2
+get-2)
 ```
 
 ## `loop` operator
