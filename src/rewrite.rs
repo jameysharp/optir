@@ -153,6 +153,30 @@ enum RewriteResult {
 }
 use RewriteResult::*;
 
+fn union_outputs(egraph: &mut EGraph, old: Id, new: Id, new_len: usize, outputs: &[RewriteResult]) {
+    let outputs_changed = outputs
+        .iter()
+        .enumerate()
+        .any(|(idx, rewrite)| *rewrite != Renumber(idx.try_into().unwrap()));
+    if outputs_changed {
+        let copies = outputs
+            .iter()
+            .map(|rewrite| match *rewrite {
+                Renumber(new_idx) => {
+                    debug_assert!(usize::from(new_idx) < new_len);
+                    egraph.add(Op::Get(new_idx, new))
+                }
+                CopyFrom(input) => input,
+            })
+            .collect();
+        let copy = egraph.add(Op::Copy(copies));
+        egraph.union(old, copy);
+    } else {
+        debug_assert!(outputs.len() <= new_len);
+        egraph.union(old, new);
+    }
+}
+
 fn rewrite_loop(
     egraph: &mut EGraph,
     id: Id,
@@ -171,11 +195,14 @@ fn rewrite_loop(
     let mut predicate_once = predicate;
     rewrite_args(egraph, &initial_subst, &mut predicate_once);
     if let Some(0) = egraph[predicate_once].data.constant_fold() {
-        for result in results.iter_mut() {
-            rewrite_args(egraph, &initial_subst, result);
-        }
-        let new = egraph.add(Op::Copy(results.into_boxed_slice()));
-        egraph.union(id, new);
+        let outputs: Vec<RewriteResult> = results
+            .iter_mut()
+            .map(|result| {
+                rewrite_args(egraph, &initial_subst, result);
+                CopyFrom(*result)
+            })
+            .collect();
+        union_outputs(egraph, id, id, 0, &outputs);
         return;
     }
 
@@ -382,28 +409,7 @@ fn rewrite_loop(
         .chain(std::iter::once(predicate))
         .collect();
     let new_loop = egraph.add(Op::Loop(loop_args));
-
-    let outputs_changed = outputs
-        .iter()
-        .enumerate()
-        .any(|(idx, rewrite)| *rewrite != Renumber(idx.try_into().unwrap()));
-    if outputs_changed {
-        let copies = outputs
-            .into_iter()
-            .map(|rewrite| match rewrite {
-                Renumber(new) => {
-                    debug_assert!(usize::from(new) < final_count);
-                    egraph.add(Op::Get(new, new_loop))
-                }
-                CopyFrom(input) => input,
-            })
-            .collect();
-        let copy = egraph.add(Op::Copy(copies));
-        egraph.union(id, copy);
-    } else {
-        debug_assert!(outputs.len() <= final_count);
-        egraph.union(id, new_loop);
-    }
+    union_outputs(egraph, id, new_loop, final_count, &outputs);
 }
 
 fn find_loop_invariant_exprs(
@@ -495,16 +501,16 @@ fn rewrite_switch(
 
     // Find outputs which are computed with equivalent expressions in every case.
     let mut iter = nested_scope.chunks_exact(spec.outputs.get() as usize);
-    let mut common_outputs: Vec<_> = iter.next().unwrap().iter().copied().map(Some).collect();
+    let mut common_outputs: Vec<_> = iter.next().unwrap().iter().copied().map(CopyFrom).collect();
     for outputs in iter {
-        for (seen, new) in common_outputs.iter_mut().zip(outputs.iter()) {
-            if *seen != Some(*new) {
-                *seen = None;
+        for (idx, (seen, new)) in common_outputs.iter_mut().zip(outputs.iter()).enumerate() {
+            if *seen != CopyFrom(*new) {
+                *seen = Renumber(idx.try_into().unwrap());
             }
         }
     }
 
-    let mut has_common = false;
+    let mut has_common = 0;
     let mut has_different = 0;
     let subst = input_args
         .iter()
@@ -512,22 +518,25 @@ fn rewrite_switch(
         .map(|(idx, arg)| (idx.try_into().unwrap(), *arg))
         .collect();
     for output in common_outputs.iter_mut() {
-        if let Some(output) = output {
-            rewrite_args(egraph, &subst, output);
-            has_common = true;
-        } else {
-            has_different += 1;
+        match output {
+            CopyFrom(result) => {
+                rewrite_args(egraph, &subst, result);
+                has_common += 1;
+            }
+            Renumber(idx) => {
+                *idx -= has_common;
+                has_different += 1;
+            }
         }
     }
 
-    debug_assert!(has_common || has_different != 0);
+    debug_assert!(has_common != 0 || has_different != 0);
 
     let mut new_switch = id;
-
-    if let Some(outputs) = NonZeroU8::new(has_different) {
-        if has_common {
+    if let Some(outputs) = NonZeroU8::new(has_different.try_into().unwrap()) {
+        if has_common != 0 {
             let mut iter = common_outputs.iter().cycle();
-            nested_scope.retain(|_| iter.next().unwrap().is_none());
+            nested_scope.retain(|_| matches!(iter.next().unwrap(), Renumber(_)));
             spec.outputs = outputs;
             debug_assert_eq!(nested_scope.len(), spec.total_outputs());
         } else {
@@ -539,24 +548,8 @@ fn rewrite_switch(
             .chain(nested_scope)
             .collect::<Box<[Id]>>();
         new_switch = egraph.add(Op::Switch(spec, switch_args));
-
-        if has_common {
-            for (idx, output) in common_outputs
-                .iter_mut()
-                .filter(|x| x.is_none())
-                .enumerate()
-            {
-                *output = Some(egraph.add(Op::Get(idx.try_into().unwrap(), new_switch)));
-            }
-        }
     }
 
-    if has_common {
-        new_switch = egraph.add(Op::Copy(
-            common_outputs.into_iter().map(Option::unwrap).collect(),
-        ));
-    }
-
-    egraph.union(id, new_switch);
+    union_outputs(egraph, id, new_switch, has_different, &common_outputs);
     // TODO: delete switch node from this class?
 }
