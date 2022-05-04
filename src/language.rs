@@ -105,6 +105,18 @@ pub struct Signature {
     pub outputs: u8,
 }
 
+impl Signature {
+    pub fn split_scope<'a>(&self, ids: &'a [Id]) -> (&'a [Id], &'a [Id]) {
+        let const_inputs = ids.len().checked_sub(self.outputs.into()).unwrap();
+        ids.split_at(const_inputs)
+    }
+
+    pub fn split_scope_mut<'a>(&self, ids: &'a mut [Id]) -> (&'a mut [Id], &'a mut [Id]) {
+        let const_inputs = ids.len().checked_sub(self.outputs.into()).unwrap();
+        ids.split_at_mut(const_inputs)
+    }
+}
+
 impl std::fmt::Display for Signature {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(f, "func-{}-inputs-{}-outputs", self.inputs, self.outputs)
@@ -161,6 +173,11 @@ define_language! {
         // implicitly appended to the caller's inputs on every call.
         Function(Signature, Box<[Id]>),
 
+        // An RVSDG "apply" node representing a function call. The first operand is the function to
+        // call and any remaining operands are inputs to the called function. The result is always
+        // a tuple.
+        "call" = Call(Box<[Id]>),
+
         // A node representing the arguments of the nearest enclosing structured control block,
         // such as "loop" or "case". The operational semantics depend on which block transitively
         // demanded the value of this node at the current point of evaluation.
@@ -183,12 +200,7 @@ impl Op {
             }
 
             Op::Switch(spec, args) => spec.split_scope(args).0,
-
-            Op::Function(sig, args) => {
-                let const_inputs = args.len().checked_sub(sig.outputs.into()).unwrap();
-                &args[..const_inputs]
-            }
-
+            Op::Function(sig, args) => sig.split_scope(args).0,
             _ => self.children(),
         }
     }
@@ -202,12 +214,7 @@ impl Op {
             }
 
             Op::Switch(spec, args) => spec.split_scope_mut(args).0,
-
-            Op::Function(sig, args) => {
-                let const_inputs = args.len().checked_sub(sig.outputs.into()).unwrap();
-                &mut args[..const_inputs]
-            }
-
+            Op::Function(sig, args) => sig.split_scope_mut(args).0,
             _ => self.children_mut(),
         }
     }

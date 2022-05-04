@@ -36,7 +36,7 @@ control flow graphs.)
 [rvsdg-2020]: https://arxiv.org/abs/1912.05036
 [control-flow]: https://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.687.6305
 
-## `func` operator
+## `func` and `call` operators
 
 The `func-N-inputs-M-outputs` operator defines an anonymous function
 which, when called, takes N inputs and produces M outputs. (It's called
@@ -55,13 +55,52 @@ functions this should be useful.
 
 The result of evaluating one of these operators is effectively the
 "address" of the function. Using it requires passing this address and
-any inputs to a separate `call` operator (not yet implemented).
+any inputs to a separate `call` operator. (It's called "apply" in the
+RVSDG papers.)
 
 Here's a function which just returns the difference of its two
-arguments:
+arguments, using a helper function to negate one of them:
+
+```lisp
+(?neg (func-1-inputs-1-outputs (* -1 get-0))
+(func-2-inputs-1-outputs (+ get-0 (get-0 (call ?neg get-1))))
+)
+```
+
+This is probably a good choice for inlining in pretty much any cost
+model, and indeed, optir does so, producing this equivalent expression:
 
 ```lisp
 (func-2-inputs-1-outputs (+ get-0 (* -1 get-1)))
+```
+
+Currently, optir's cost function believes inlining is _always_ an
+improvement, because it doesn't account for sharing. Here's an example
+where I think optir's use of equality saturation over e-graphs should
+really shine, but doesn't yet:
+
+```lisp
+(?callee (func-1-inputs-2-outputs (loop get-0 (+ get-0 1) (+ get-0 -42)) 1)
+(?call1 (call ?callee 1)
+(?call2 (call ?callee 2)
+(?call3 (call ?callee 3)
+(func-0-inputs-2-outputs
+  (+ (get-0 ?call1) (+ (get-0 ?call2) (get-0 ?call3)))
+  (+ (get-1 ?call1) (+ (get-1 ?call2) (get-1 ?call3)))
+)))))
+```
+
+Because the e-graph for this program can represent both the inlined and
+non-inlined variants at the same time, it should be able to
+constant-fold the second result while still calling `?callee` to compute
+the first result. Ideally that would look like this:
+
+```lisp
+(?callee (func-1-inputs-2-outputs (loop get-0 (+ get-0 1) (+ get-0 -42)) 1)
+(func-0-inputs-2-outputs
+  (+ (get-0 (call ?callee 1)) (+ (get-0 (call ?callee 2)) (get-0 (call ?callee 3))))
+  3
+))
 ```
 
 ## `switch` operator

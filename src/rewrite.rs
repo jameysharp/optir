@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU8;
 
 use crate::analysis::{Analysis, ArgsUsedData};
-use crate::language::{Get, GetVec, Op, Switch};
+use crate::language::{Get, GetVec, Op, Signature, Switch};
 
 type Rewrite = egg::Rewrite<Op, Analysis>;
 type EGraph = egg::EGraph<Op, Analysis>;
@@ -94,6 +94,7 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
     let egraph = &mut runner.egraph;
     let mut loops = Vec::new();
     let mut switches = Vec::new();
+    let mut calls = Vec::new();
 
     for class in egraph.classes() {
         for node in class.iter() {
@@ -117,6 +118,15 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
                     ));
                 }
 
+                Op::Call(args) => {
+                    let (&target, inputs) = args.split_first().unwrap();
+                    for target in egraph[target].iter() {
+                        if let Op::Function(sig, f) = target {
+                            calls.push((class.id, inputs.to_vec(), *sig, f.to_vec()));
+                        }
+                    }
+                }
+
                 _ => {}
             }
         }
@@ -128,6 +138,10 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
 
     for (id, spec, predicate, input_args, nested_scope) in switches {
         rewrite_switch(egraph, id, spec, predicate, input_args, nested_scope);
+    }
+
+    for (id, inputs, sig, func) in calls {
+        rewrite_call(egraph, id, inputs, sig, func);
     }
 
     egraph.rebuild();
@@ -540,4 +554,26 @@ fn rewrite_switch(
 
     union_outputs(egraph, id, new_switch, has_different, &common_outputs);
     // TODO: delete switch node from this class?
+}
+
+fn rewrite_call(egraph: &mut EGraph, id: Id, inputs: Vec<Id>, sig: Signature, func: Vec<Id>) {
+    assert_eq!(inputs.len(), sig.inputs.into());
+    let (const_inputs, results) = sig.split_scope(&func);
+
+    let subst = inputs
+        .into_iter()
+        .chain(const_inputs.iter().copied())
+        .enumerate()
+        .map(|(idx, arg)| (idx.try_into().unwrap(), arg))
+        .collect();
+
+    let outputs: Vec<RewriteResult> = results
+        .iter()
+        .map(|&(mut result)| {
+            rewrite_args(egraph, &subst, &mut result);
+            CopyFrom(result)
+        })
+        .collect();
+
+    union_outputs(egraph, id, id, 0, &outputs);
 }
