@@ -8,7 +8,7 @@ mod extract;
 mod language;
 mod rewrite;
 
-use bind::resolve_bindings;
+use bind::{bind_common_subexprs, resolve_bindings};
 
 fn main() -> std::io::Result<()> {
     let mut input = String::new();
@@ -28,7 +28,8 @@ fn main() -> std::io::Result<()> {
 
     for &root in runner.roots.iter() {
         let (cost, expr) = extractor.find_best(root);
-        println!("cost {}: {}", cost, expr);
+        println!("cost {}:", cost);
+        println!("{}", bind_common_subexprs(&expr).pretty(80));
     }
 
     Ok(())

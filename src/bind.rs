@@ -1,5 +1,6 @@
 use egg::{FromOp, Id, Language, RecExpr, Var};
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::rc::Rc;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -46,6 +47,16 @@ impl<L: FromOp> FromOp for Binding<L> {
     }
 }
 
+impl<L: Language + Display> Display for Binding<L> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Binding::Bind(var, _) => Display::fmt(var, f),
+            Binding::Use(var) => Display::fmt(var, f),
+            Binding::ENode(node) => Display::fmt(node, f),
+        }
+    }
+}
+
 pub fn resolve_bindings<L: Language + Clone>(input: &RecExpr<Binding<L>>) -> RecExpr<L> {
     fn go<L: Language + Clone>(
         result: &mut Vec<L>,
@@ -84,4 +95,40 @@ pub fn resolve_bindings<L: Language + Clone>(input: &RecExpr<Binding<L>>) -> Rec
         Rc::new(HashMap::new()),
     );
     RecExpr::from(result)
+}
+
+pub fn bind_common_subexprs<L: Language + Clone>(input: &RecExpr<L>) -> RecExpr<Binding<L>> {
+    let mut uses = HashMap::with_capacity(input.as_ref().len());
+    for (idx, enode) in input.as_ref().iter().enumerate().rev() {
+        let children = enode.children();
+        if children.is_empty() {
+            // Never treat leaves as shared. Since we're walking the RecExpr in reverse, we're
+            // guaranteed to visit a leaf only after we've visited all nodes which reference it.
+            uses.remove(&idx);
+        } else {
+            for &child in children {
+                *uses.entry(usize::from(child)).or_insert(0) += 1;
+            }
+        }
+    }
+
+    fn mkvar(idx: usize) -> Var {
+        format!("?{}", idx).parse().unwrap()
+    }
+
+    uses.retain(|_idx, count| *count > 1);
+    let mut result = RecExpr::from(Vec::with_capacity(input.as_ref().len() + uses.len() * 2));
+    let mut last = Id::from(!0);
+    for (idx, enode) in input.as_ref().iter().enumerate() {
+        last = result.add(if uses.contains_key(&idx) {
+            Binding::Use(mkvar(idx))
+        } else {
+            Binding::ENode(enode.clone())
+        });
+    }
+    for (idx, _count) in uses {
+        let val = result.add(Binding::ENode(input[Id::from(idx)].clone()));
+        last = result.add(Binding::Bind(mkvar(idx), [val, last]));
+    }
+    result
 }
