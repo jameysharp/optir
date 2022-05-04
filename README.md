@@ -20,7 +20,7 @@ There are several kinds of operators:
 
 The input can also contain let-bindings, such as `(?x 21 (+ ?x ?x))`,
 which is equivalent to `(+ 21 21)`. This is purely for convenience:
-recusrive definitions aren't allowed, so let-bindings are exactly
+recursive definitions aren't allowed, so let-bindings are exactly
 equivalent to writing out the bound expression everywhere the name is
 used. Even without let-bindings, the dataflow graph is hash-consed so
 repeated expressions get shared internally.
@@ -148,6 +148,7 @@ Here's an expression to compute the nth natural power of x, if x and n
 are provided as inputs 0 and 1, respectively:
 
 ```lisp
+(func-2-inputs-1-outputs
 (get-2
   (loop
   get-0 get-1 1
@@ -155,7 +156,7 @@ are provided as inputs 0 and 1, respectively:
   (>> get-1 1)
   (get-0 (switch-2-cases-1-outputs (& get-1 1) get-0 get-2 get-1 (* get-1 get-0)))
   get-1)
-)
+))
 ```
 
 Currently, optir does several loop optimizations, but I haven't really
