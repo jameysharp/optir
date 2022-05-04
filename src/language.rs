@@ -139,8 +139,6 @@ define_language! {
         ">>s" = ShiftRightSign([Id; 2]),
         "&" = BitAnd([Id; 2]),
 
-        "copy" = Copy(Box<[Id]>),
-
         // An RVSDG "theta" node representing a structured tail-controlled loop. The last operand
         // is the predicate indicating whether the loop should continue for another iteration. The
         // other operands are N inputs, followed by N results. The input is available in the first

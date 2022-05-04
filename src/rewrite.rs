@@ -94,7 +94,6 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
     let egraph = &mut runner.egraph;
     let mut loops = Vec::new();
     let mut switches = Vec::new();
-    let mut unions = Vec::new();
 
     for class in egraph.classes() {
         for node in class.iter() {
@@ -118,13 +117,6 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
                     ));
                 }
 
-                &Op::Get(idx, src) => {
-                    for node in egraph[src].iter() {
-                        if let Op::Copy(args) = node {
-                            unions.push((class.id, args[usize::from(idx)]));
-                        }
-                    }
-                }
                 _ => {}
             }
         }
@@ -136,10 +128,6 @@ pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), Stri
 
     for (id, spec, predicate, input_args, nested_scope) in switches {
         rewrite_switch(egraph, id, spec, predicate, input_args, nested_scope);
-    }
-
-    for (a, b) in unions {
-        egraph.union(a, b);
     }
 
     egraph.rebuild();
@@ -154,24 +142,24 @@ enum RewriteResult {
 use RewriteResult::*;
 
 fn union_outputs(egraph: &mut EGraph, old: Id, new: Id, new_len: usize, outputs: &[RewriteResult]) {
-    let outputs_changed = outputs
-        .iter()
-        .enumerate()
-        .any(|(idx, rewrite)| *rewrite != Renumber(idx.try_into().unwrap()));
-    if outputs_changed {
-        let copies = outputs
-            .iter()
-            .map(|rewrite| match *rewrite {
+    let mut outputs_changed = false;
+    for (idx, &rewrite) in outputs.iter().enumerate() {
+        let idx = idx.try_into().unwrap();
+        outputs_changed |= rewrite != Renumber(idx);
+
+        if let Some(old_get) = egraph.lookup(Op::Get(idx, old)) {
+            let new_get = match rewrite {
                 Renumber(new_idx) => {
                     debug_assert!(usize::from(new_idx) < new_len);
                     egraph.add(Op::Get(new_idx, new))
                 }
                 CopyFrom(input) => input,
-            })
-            .collect();
-        let copy = egraph.add(Op::Copy(copies));
-        egraph.union(old, copy);
-    } else {
+            };
+            egraph.union(old_get, new_get);
+        }
+    }
+
+    if !outputs_changed {
         debug_assert!(outputs.len() <= new_len);
         egraph.union(old, new);
     }

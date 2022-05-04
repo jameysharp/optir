@@ -95,7 +95,6 @@ impl egg::Analysis<Op> for Analysis {
                 Op::ShiftRightZero([l, r]) => ((c(l)? as u32) >> c(r)?) as i32,
                 Op::ShiftRightSign([l, r]) => c(l)? >> c(r)?,
                 Op::BitAnd([l, r]) => c(l)? & c(r)?,
-                Op::Copy(_) => return None,
                 Op::Function(_, _) => return None,
                 Op::Loop(_) => return None,
                 Op::Switch(_, _) => return None,

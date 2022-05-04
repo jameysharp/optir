@@ -13,9 +13,8 @@ There are several kinds of operators:
 
 - Constant numbers, such as `-42`
 - Binary operators, such as `(+ 5 (* -1 2))`
-- The `copy` operator, whose result is a tuple of its operands
-- The `get-N` unary operator to extract the Nth result from a tuple:
-  `(get-1 (copy 1 2 3))` is equivalent to `2`
+- The `get-N` unary operator to extract the Nth result from a tuple,
+  numbered from 0
 - The control flow operators, described below: `func`, `loop`, and
   `switch`, and nullary `get-N`
 
@@ -207,7 +206,7 @@ example:
 - bit hacks: `(% ?a ?c)` &rArr; `(& ?a (+ ?c -1))` if `is_power_of_two("?c")`
 
 It does not provide any simple syntax like that to express rewrite rules
-involving variadic operators like `loop`, `switch`, and `copy`. But it
+involving variadic operators like `loop`, `switch`, and `func`. But it
 does provide a hook for running arbitrary passes over the e-graph
 periodically during equality saturation, which let me implement those
 rewrites as (rather more verbose) Rust.
