@@ -74,34 +74,35 @@ model, and indeed, optir does so, producing this equivalent expression:
 (func-2-inputs-1-outputs (+ get-0 (* -1 get-1)))
 ```
 
-Currently, optir's cost function believes inlining is _always_ an
-improvement, because it doesn't account for sharing. Here's an example
-where I think optir's use of equality saturation over e-graphs should
-really shine, but doesn't yet:
+Here's an example where I think optir's use of equality saturation on
+e-graphs really shines:
 
 ```lisp
-(?callee (func-1-inputs-2-outputs (loop get-0 (+ get-0 1) (+ get-0 -42)) 1)
-(?call1 (call ?callee 1)
-(?call2 (call ?callee 2)
-(?call3 (call ?callee 3)
+(?f (func-1-inputs-2-outputs (get-0 (loop get-0 (+ get-0 1) (+ get-0 -42))) 1)
+(?call1 (call ?f 1)
+(?call2 (call ?f 2)
+(?call3 (call ?f 3)
 (func-0-inputs-2-outputs
   (+ (get-0 ?call1) (+ (get-0 ?call2) (get-0 ?call3)))
   (+ (get-1 ?call1) (+ (get-1 ?call2) (get-1 ?call3)))
 )))))
 ```
 
-Because the e-graph for this program can represent both the inlined and
-non-inlined variants at the same time, it should be able to
-constant-fold the second result while still calling `?callee` to compute
-the first result. Ideally that would look like this:
+The e-graph for this program can represent both the inlined and
+non-inlined variants at the same time. This allows rewriting based on
+facts learned from inlining, even if extraction later decides that it's
+worth keeping the function un-inlined. The implementation currently
+produces this equivalent expression:
 
 ```lisp
-(?callee (func-1-inputs-2-outputs (loop get-0 (+ get-0 1) (+ get-0 -42)) 1)
+(?f (func-1-inputs-2-outputs (get-0 (loop get-0 (+ get-0 1) (+ get-0 -42))) 1)
 (func-0-inputs-2-outputs
-  (+ (get-0 (call ?callee 1)) (+ (get-0 (call ?callee 2)) (get-0 (call ?callee 3))))
-  3
-))
+  (+ (get-0 (call ?f 1)) (+ (get-0 (call ?f 2)) (get-0 (call ?f 3))))
+  3))
 ```
+
+The second output has been constant-folded to 3, even thought the first
+output is still produced by calling `?f`.
 
 ## `switch` operator
 

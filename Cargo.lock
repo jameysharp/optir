@@ -44,11 +44,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "coin_cbc"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d4d15b4d7c661692f07a2a268f4b255c2a41777d2bf5470ce329011c11d9c5"
+dependencies = [
+ "coin_cbc_sys",
+ "lazy_static",
+]
+
+[[package]]
+name = "coin_cbc_sys"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4902c2c164ed74da85aa8472c4a754de1d8164c1fd16d672ec0faf22da482fa9"
+
+[[package]]
 name = "egg"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4faa1b28142babe696550f8c10003c99df76d3e8eae5fb7d8b2139eb6144f42"
 dependencies = [
+ "coin_cbc",
  "fxhash",
  "hashbrown 0.12.1",
  "indexmap",
@@ -119,6 +136,12 @@ checksum = "7a5bbe824c507c5da5956355e86a746d82e0e1464f65d862cc5e71da70e94b2c"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "lazy_static"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "libc"

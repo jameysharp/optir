@@ -8,5 +8,6 @@ in pkgs.mkShell {
   nativeBuildInputs = [
     pkgs.rust-bin.stable.latest.default
     pkgs.cargo-edit
+    pkgs.cbc # for egg's lp feature
   ];
 }

@@ -24,13 +24,9 @@ fn main() -> std::io::Result<()> {
     runner.print_report();
     println!("{:?}", runner.egraph.dump());
 
-    let extractor = egg::Extractor::new(&runner.egraph, extract::OpCost);
-
-    for &root in runner.roots.iter() {
-        let (cost, expr) = extractor.find_best(root);
-        println!("cost {}:", cost);
-        println!("{}", bind_common_subexprs(&expr).pretty(80));
-    }
+    let mut extractor = egg::LpExtractor::new(&runner.egraph, extract::OpCost);
+    let (expr, _roots) = extractor.solve_multiple(&runner.roots);
+    println!("{}", bind_common_subexprs(&expr).pretty(80));
 
     Ok(())
 }
