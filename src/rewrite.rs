@@ -46,50 +46,53 @@ pub fn rules() -> Vec<Rewrite> {
     ]
 }
 
-fn rewrite_args(egraph: &mut EGraph, subst: &HashMap<Get, Id>, id: &mut Id) {
-    let mut args_used = ArgsUsedData::ZERO;
-    let subst = subst
-        .iter()
-        .filter_map(|(&from, &to)| {
-            egraph.lookup(Op::Arg(from)).map(|eclass| {
-                args_used.set(from.into(), true);
-                (eclass, to)
-            })
-        })
-        .collect();
-    rewrite_exprs(egraph, &args_used, &subst, id);
+#[derive(Default)]
+struct DeepSubst {
+    used: ArgsUsedData,
+    subst: HashMap<Id, Id>,
 }
 
-fn rewrite_exprs(
-    egraph: &mut EGraph,
-    args_used: &ArgsUsedData,
-    subst: &HashMap<Id, Id>,
-    id: &mut Id,
-) {
-    if let Some(new) = subst.get(id) {
-        *id = *new;
-        return;
+impl DeepSubst {
+    fn new(egraph: &mut EGraph, subst: impl IntoIterator<Item = (Get, Id)>) -> Self {
+        let mut used = ArgsUsedData::ZERO;
+        let subst = subst
+            .into_iter()
+            .filter_map(|(from, to)| {
+                egraph.lookup(Op::Arg(from)).map(|eclass| {
+                    used.set(from.into(), true);
+                    (eclass, to)
+                })
+            })
+            .collect();
+        DeepSubst { used, subst }
     }
 
-    let class = &egraph[*id];
-    if (args_used.clone() & class.data.args_used()).not_any() {
-        return;
-    }
-
-    let mut nodes: Vec<Op> = class.iter().cloned().collect();
-    for node in nodes.iter_mut() {
-        for child in node.same_scope_children_mut() {
-            rewrite_exprs(egraph, args_used, subst, child);
+    fn rewrite(&self, egraph: &mut EGraph, id: &mut Id) {
+        if let Some(new) = self.subst.get(id) {
+            *id = *new;
+            return;
         }
-    }
 
-    let mut nodes = nodes.into_iter();
-    *id = egraph.add(nodes.next().unwrap());
-    for node in nodes {
-        let new = egraph.add(node);
-        egraph.union(*id, new);
+        let class = &egraph[*id];
+        if (self.used.clone() & class.data.args_used()).not_any() {
+            return;
+        }
+
+        let mut nodes: Vec<Op> = class.iter().cloned().collect();
+        for node in nodes.iter_mut() {
+            for child in node.same_scope_children_mut() {
+                self.rewrite(egraph, child);
+            }
+        }
+
+        let mut nodes = nodes.into_iter();
+        *id = egraph.add(nodes.next().unwrap());
+        for node in nodes {
+            let new = egraph.add(node);
+            egraph.union(*id, new);
+        }
+        *id = egraph.find(*id);
     }
-    *id = egraph.find(*id);
 }
 
 pub fn variadic_rules(runner: &mut egg::Runner<Op, Analysis>) -> Result<(), String> {
@@ -191,18 +194,18 @@ fn rewrite_loop(
     let initial_subst = inputs
         .iter()
         .enumerate()
-        .map(|(idx, arg)| (idx.try_into().unwrap(), *arg))
-        .collect();
+        .map(|(idx, arg)| (idx.try_into().unwrap(), *arg));
+    let initial_subst = DeepSubst::new(egraph, initial_subst);
 
     // If this loop's predicate is always false on the first iteration, then the loop body always
     // runs exactly once. None of the other rewrites matter then because the result isn't a loop.
     let mut predicate_once = predicate;
-    rewrite_args(egraph, &initial_subst, &mut predicate_once);
+    initial_subst.rewrite(egraph, &mut predicate_once);
     if let Some(0) = egraph[predicate_once].data.constant_fold() {
         let outputs: Vec<RewriteResult> = results
             .iter_mut()
             .map(|result| {
-                rewrite_args(egraph, &initial_subst, result);
+                initial_subst.rewrite(egraph, result);
                 CopyFrom(*result)
             })
             .collect();
@@ -229,25 +232,26 @@ fn rewrite_loop(
     let is_group = |(_, v): (Id, GetVec)| Some(v).filter(|v| v.len() > 1);
     let mut input_groups: Vec<_> = dedup_inputs.drain().filter_map(is_group).collect();
     let mut next_groups = Vec::new();
-    let mut dedup_subst = HashMap::new();
+    let mut dedup_subst = DeepSubst::default();
     let mut proved = false;
     while !proved && !input_groups.is_empty() {
         // Rewrite every use of variables from seemingly equivalent groups to refer to one
         // representative member of the group.
-        dedup_subst.clear();
-        for group in input_groups.iter() {
-            let representative = egraph.add(Op::Arg(group[0]));
-            for &idx in group[1..].iter() {
-                dedup_subst.insert(idx, representative);
-            }
-        }
+        let dedup: Vec<_> = input_groups
+            .iter()
+            .flat_map(|group| {
+                let representative = egraph.add(Op::Arg(group[0]));
+                group[1..].iter().map(move |&idx| (idx, representative))
+            })
+            .collect();
+        dedup_subst = DeepSubst::new(egraph, dedup);
 
         // Now test if the hypothesis holds.
         proved = true;
         for group in input_groups.drain(..) {
             for idx in group {
                 let mut result = results[usize::from(idx)];
-                rewrite_args(egraph, &dedup_subst, &mut result);
+                dedup_subst.rewrite(egraph, &mut result);
                 dedup_inputs
                     .entry(result)
                     .or_insert_with(GetVec::new)
@@ -274,17 +278,19 @@ fn rewrite_loop(
             }
         }
 
-        for result in results.iter_mut() {
-            rewrite_args(egraph, &dedup_subst, result);
+        for (idx, result) in results.iter_mut().enumerate() {
+            if !to_merge[idx] {
+                dedup_subst.rewrite(egraph, result);
+            }
         }
-        rewrite_args(egraph, &dedup_subst, &mut predicate);
+        dedup_subst.rewrite(egraph, &mut predicate);
     }
 
     // A variable is loop-invariant iff its result is equivalent to its argument. If it's
     // loop-invariant and its input is constant, then it stays constant through the body of the
     // loop too and should be substituted everywhere it's used.
     let mut variant = ArgsUsedData::ZERO;
-    let mut constant_subst = HashMap::new();
+    let mut constant_subst = Vec::new();
     let mut invariant_inputs = HashMap::new();
     for (idx, result) in results.iter().enumerate() {
         if to_merge[idx] {
@@ -294,7 +300,7 @@ fn rewrite_loop(
             Some(arg) if arg == *result => {
                 let input = inputs[usize::from(arg)];
                 if egraph[input].data.constant_fold().is_some() {
-                    constant_subst.insert(idx.try_into().unwrap(), input);
+                    constant_subst.push((idx.try_into().unwrap(), input));
                 } else {
                     // We already de-duplicated equivalent inputs so this must be the only unmerged
                     // variable that both is loop-invariant and has this input expression.
@@ -309,14 +315,15 @@ fn rewrite_loop(
     }
 
     // An expression is loop-invariant iff the only variables it uses are loop-invariant.
+    let constant_subst = DeepSubst::new(egraph, constant_subst);
     let mut seen = HashSet::new();
     let mut invariant_exprs = HashSet::new();
     for idx in variant.iter_ones() {
         let result = &mut results[idx];
-        rewrite_args(egraph, &constant_subst, result);
+        constant_subst.rewrite(egraph, result);
         find_loop_invariant_exprs(egraph, &variant, &mut seen, &mut invariant_exprs, *result);
     }
-    rewrite_args(egraph, &constant_subst, &mut predicate);
+    constant_subst.rewrite(egraph, &mut predicate);
     find_loop_invariant_exprs(egraph, &variant, &mut seen, &mut invariant_exprs, predicate);
     drop(seen);
 
@@ -325,11 +332,10 @@ fn rewrite_loop(
     // loop-invariant variables, initialized to the value of the hoisted expressions. If we're
     // lucky, a hoisted expression is equivalent to some value that's already a loop-invariant
     // input, and we can just reuse that. Otherwise we have to add a new input.
-    let mut hoist_args_used = ArgsUsedData::ZERO;
-    let mut hoist_rewrites = HashMap::new();
+    let mut hoist_rewrites = DeepSubst::default();
     for invariant_expr in invariant_exprs {
         let mut rewritten = invariant_expr;
-        rewrite_args(egraph, &initial_subst, &mut rewritten);
+        initial_subst.rewrite(egraph, &mut rewritten);
         let new = *invariant_inputs.entry(rewritten).or_insert_with(|| {
             let new_arg = egraph.add(Op::Arg(inputs.len().try_into().unwrap()));
             inputs.push(rewritten);
@@ -337,16 +343,16 @@ fn rewrite_loop(
             new_arg
         });
         if new != invariant_expr {
-            hoist_args_used |= egraph[invariant_expr].data.args_used();
-            hoist_rewrites.insert(invariant_expr, new);
+            hoist_rewrites.used |= egraph[invariant_expr].data.args_used();
+            hoist_rewrites.subst.insert(invariant_expr, new);
         }
     }
 
-    if !hoist_rewrites.is_empty() {
+    if !hoist_rewrites.subst.is_empty() {
         for result in results.iter_mut() {
-            rewrite_exprs(egraph, &hoist_args_used, &hoist_rewrites, result);
+            hoist_rewrites.rewrite(egraph, result);
         }
-        rewrite_exprs(egraph, &hoist_args_used, &hoist_rewrites, &mut predicate);
+        hoist_rewrites.rewrite(egraph, &mut predicate);
     }
 
     // Loop-invariant variables are never needed as outputs from the loop, because we can take
@@ -381,7 +387,7 @@ fn rewrite_loop(
             let mut iter = keep.iter();
             results.retain(|_| *iter.next().unwrap());
 
-            let mut unused_subst = HashMap::new();
+            let mut unused_subst = Vec::new();
             for (idx, rewrite) in outputs.iter_mut().enumerate().skip(first_remove) {
                 let idx = idx.try_into().unwrap();
                 let mut tmp = idx;
@@ -400,7 +406,7 @@ fn rewrite_loop(
                     continue;
                 };
                 *new -= keep[first_remove..usize::from(*new)].count_zeros();
-                unused_subst.insert(idx, egraph.add(Op::Arg(*new)));
+                unused_subst.push((idx, egraph.add(Op::Arg(*new))));
             }
 
             // If we added variables while hoisting invariant computations out of the loop, then
@@ -409,13 +415,14 @@ fn rewrite_loop(
             for idx in outputs.len()..orig_count {
                 debug_assert!(keep[idx]);
                 let idx = idx.try_into().unwrap();
-                unused_subst.insert(idx, egraph.add(Op::Arg(idx - removed)));
+                unused_subst.push((idx, egraph.add(Op::Arg(idx - removed))));
             }
 
+            let unused_subst = DeepSubst::new(egraph, unused_subst);
             for result in results.iter_mut() {
-                rewrite_args(egraph, &unused_subst, result);
+                unused_subst.rewrite(egraph, result);
             }
-            rewrite_args(egraph, &unused_subst, &mut predicate);
+            unused_subst.rewrite(egraph, &mut predicate);
         }
     }
 
@@ -496,20 +503,21 @@ fn rewrite_switch(
         }
 
         if dedup_args != input_args {
-            let mut subst = HashMap::new();
+            let mut subst = Vec::new();
             for (old_idx, old) in input_args.into_iter().enumerate() {
                 if let Some(new_idx) = dedup_args.iter().position(|new| *new == old) {
                     if old_idx != new_idx {
-                        subst.insert(
+                        subst.push((
                             old_idx.try_into().unwrap(),
                             egraph.add(Op::Arg(new_idx.try_into().unwrap())),
-                        );
+                        ));
                     }
                 }
             }
 
+            let subst = DeepSubst::new(egraph, subst);
             for output in nested_scope.iter_mut() {
-                rewrite_args(egraph, &subst, output);
+                subst.rewrite(egraph, output);
             }
 
             input_args = dedup_args;
@@ -532,12 +540,12 @@ fn rewrite_switch(
     let subst = input_args
         .iter()
         .enumerate()
-        .map(|(idx, arg)| (idx.try_into().unwrap(), *arg))
-        .collect();
+        .map(|(idx, arg)| (idx.try_into().unwrap(), *arg));
+    let subst = DeepSubst::new(egraph, subst);
     for output in common_outputs.iter_mut() {
         match output {
             CopyFrom(result) => {
-                rewrite_args(egraph, &subst, result);
+                subst.rewrite(egraph, result);
                 has_common += 1;
             }
             Renumber(idx) => {
@@ -579,13 +587,13 @@ fn rewrite_call(egraph: &mut EGraph, id: Id, inputs: Vec<Id>, sig: Signature, fu
         .into_iter()
         .chain(const_inputs.iter().copied())
         .enumerate()
-        .map(|(idx, arg)| (idx.try_into().unwrap(), arg))
-        .collect();
+        .map(|(idx, arg)| (idx.try_into().unwrap(), arg));
+    let subst = DeepSubst::new(egraph, subst);
 
     let outputs: Vec<RewriteResult> = results
         .iter()
         .map(|&(mut result)| {
-            rewrite_args(egraph, &subst, &mut result);
+            subst.rewrite(egraph, &mut result);
             CopyFrom(result)
         })
         .collect();
