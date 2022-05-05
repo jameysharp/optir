@@ -278,20 +278,31 @@ fn rewrite_loop(
         rewrite_args(egraph, &dedup_subst, &mut predicate);
     }
 
-    // A variable is loop-invariant iff its result is equivalent to its argument.
+    // A variable is loop-invariant iff its result is equivalent to its argument. If it's
+    // loop-invariant and its input is constant, then it stays constant through the body of the
+    // loop too and should be substituted everywhere it's used.
     let mut variant = ArgsUsedData::ZERO;
+    let mut constant_subst = HashMap::new();
     let mut invariant_inputs = HashMap::new();
     for (idx, result) in results.iter().enumerate() {
-        if !to_merge[idx] {
-            if let Some(arg) = egraph.lookup(Op::Arg(idx.try_into().unwrap())) {
-                if arg == *result {
-                    // We already de-duplicated equivalent inputs so this must be the only variable
-                    // that both is loop-invariant and has this input expression.
-                    invariant_inputs.insert(inputs[idx], arg);
-                    continue;
+        if to_merge[idx] {
+            continue;
+        }
+        match egraph.lookup(Op::Arg(idx.try_into().unwrap())) {
+            Some(arg) if arg == *result => {
+                let input = inputs[usize::from(arg)];
+                if egraph[input].data.constant_fold().is_some() {
+                    constant_subst.insert(idx.try_into().unwrap(), input);
+                } else {
+                    // We already de-duplicated equivalent inputs so this must be the only unmerged
+                    // variable that both is loop-invariant and has this input expression.
+                    // Therefore, this map doesn't need to track multiple values per key.
+                    let old = invariant_inputs.insert(input, arg);
+                    debug_assert_eq!(old, None);
                 }
             }
-            variant.set(idx, true);
+
+            _ => variant.set(idx, true),
         }
     }
 
@@ -299,14 +310,11 @@ fn rewrite_loop(
     let mut seen = HashSet::new();
     let mut invariant_exprs = HashSet::new();
     for idx in variant.iter_ones() {
-        find_loop_invariant_exprs(
-            egraph,
-            &variant,
-            &mut seen,
-            &mut invariant_exprs,
-            results[idx],
-        );
+        let result = &mut results[idx];
+        rewrite_args(egraph, &constant_subst, result);
+        find_loop_invariant_exprs(egraph, &variant, &mut seen, &mut invariant_exprs, *result);
     }
+    rewrite_args(egraph, &constant_subst, &mut predicate);
     find_loop_invariant_exprs(egraph, &variant, &mut seen, &mut invariant_exprs, predicate);
     drop(seen);
 
