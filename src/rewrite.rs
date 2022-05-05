@@ -381,19 +381,24 @@ fn rewrite_loop(
 
             let mut unused_subst = HashMap::new();
             for (idx, rewrite) in outputs.iter_mut().enumerate().skip(first_remove) {
-                let removed_earlier = keep[first_remove..idx].count_zeros();
                 let idx = idx.try_into().unwrap();
+                let mut tmp = idx;
                 let new = if let Renumber(new) = rewrite {
                     debug_assert!(keep[usize::from(*new)]);
                     debug_assert!(idx == *new || !keep[usize::from(idx)]);
-                    *new -= removed_earlier;
-                    *new
+                    if usize::from(*new) < first_remove {
+                        // This variable got merged with one that's not moving.
+                        continue;
+                    }
+                    new
                 } else if keep[usize::from(idx)] {
-                    idx - removed_earlier
+                    // This is a CopyFrom, so nobody outside the loop cares what index it's at now.
+                    &mut tmp
                 } else {
                     continue;
                 };
-                unused_subst.insert(idx, egraph.add(Op::Arg(new)));
+                *new -= keep[first_remove..usize::from(*new)].count_zeros();
+                unused_subst.insert(idx, egraph.add(Op::Arg(*new)));
             }
 
             // If we added variables while hoisting invariant computations out of the loop, then
