@@ -1,5 +1,6 @@
 use egg::{rewrite, Id, Subst};
 use std::collections::{HashMap, HashSet};
+use std::iter::once;
 use std::num::NonZeroU8;
 
 use crate::analysis::{Analysis, ArgsUsedData};
@@ -80,9 +81,7 @@ impl DeepSubst {
 
         let mut nodes: Vec<Op> = class.iter().cloned().collect();
         for node in nodes.iter_mut() {
-            for child in node.same_scope_children_mut() {
-                self.rewrite(egraph, child);
-            }
+            self.rewrite_all(egraph, node.same_scope_children_mut());
         }
 
         let mut nodes = nodes.into_iter();
@@ -92,6 +91,12 @@ impl DeepSubst {
             egraph.union(*id, new);
         }
         *id = egraph.find(*id);
+    }
+
+    fn rewrite_all<'a>(&self, egraph: &mut EGraph, ids: impl IntoIterator<Item = &'a mut Id>) {
+        for id in ids {
+            self.rewrite(egraph, id);
+        }
     }
 }
 
@@ -204,9 +209,7 @@ fn rewrite_loop(
     let mut predicate_once = predicate;
     initial_subst.rewrite(egraph, &mut predicate_once);
     if let Some(0) = egraph[predicate_once].data.constant_fold() {
-        for result in results.iter_mut() {
-            initial_subst.rewrite(egraph, result);
-        }
+        initial_subst.rewrite_all(egraph, &mut results);
         union_outputs(egraph, id, id, 0, results.into_iter().map(CopyFrom));
         return;
     }
@@ -347,10 +350,7 @@ fn rewrite_loop(
     }
 
     if !hoist_rewrites.subst.is_empty() {
-        for result in results.iter_mut() {
-            hoist_rewrites.rewrite(egraph, result);
-        }
-        hoist_rewrites.rewrite(egraph, &mut predicate);
+        hoist_rewrites.rewrite_all(egraph, once(&mut predicate).chain(&mut results));
     }
 
     // Loop-invariant variables are never needed as outputs from the loop, because we can take
@@ -416,11 +416,8 @@ fn rewrite_loop(
                 unused_subst.push((idx, egraph.add(Op::Arg(idx - removed))));
             }
 
-            let unused_subst = DeepSubst::new(egraph, unused_subst);
-            for result in results.iter_mut() {
-                unused_subst.rewrite(egraph, result);
-            }
-            unused_subst.rewrite(egraph, &mut predicate);
+            DeepSubst::new(egraph, unused_subst)
+                .rewrite_all(egraph, once(&mut predicate).chain(&mut results));
         }
     }
 
@@ -428,7 +425,7 @@ fn rewrite_loop(
     let loop_args = inputs
         .into_iter()
         .chain(results)
-        .chain(std::iter::once(predicate))
+        .chain(once(predicate))
         .collect();
     let new_loop = egraph.add(Op::Loop(loop_args));
     union_outputs(egraph, id, new_loop, final_count, outputs);
@@ -513,11 +510,7 @@ fn rewrite_switch(
                 }
             }
 
-            let subst = DeepSubst::new(egraph, subst);
-            for output in nested_scope.iter_mut() {
-                subst.rewrite(egraph, output);
-            }
-
+            DeepSubst::new(egraph, subst).rewrite_all(egraph, &mut nested_scope);
             input_args = dedup_args;
         }
     }
@@ -566,10 +559,10 @@ fn rewrite_switch(
             debug_assert_eq!(spec.outputs, outputs);
         }
 
-        let switch_args = std::iter::once(predicate)
+        let switch_args = once(predicate)
             .chain(input_args)
             .chain(nested_scope)
-            .collect::<Box<[Id]>>();
+            .collect();
         new_switch = egraph.add(Op::Switch(spec, switch_args));
     }
 
@@ -586,10 +579,7 @@ fn rewrite_call(egraph: &mut EGraph, id: Id, inputs: Vec<Id>, sig: Signature, mu
         .chain(const_inputs.iter().copied())
         .enumerate()
         .map(|(idx, arg)| (idx.try_into().unwrap(), arg));
-    let subst = DeepSubst::new(egraph, subst);
 
-    for result in results.iter_mut() {
-        subst.rewrite(egraph, result);
-    }
+    DeepSubst::new(egraph, subst).rewrite_all(egraph, results.iter_mut());
     union_outputs(egraph, id, id, 0, results.iter().copied().map(CopyFrom));
 }
