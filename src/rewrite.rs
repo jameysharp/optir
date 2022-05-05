@@ -230,26 +230,30 @@ fn rewrite_loop(
 
     // Try to prove the hypothesis inductively: merge all variables which seem to be equivalent
     // and check that the loop block's results are still equivalent afterward.
-    let is_group = |(_, v): (Id, GetVec)| Some(v).filter(|v| v.len() > 1);
-    let mut input_groups: Vec<_> = dedup_inputs.drain().filter_map(is_group).collect();
+    fn is_group(egraph: &mut EGraph) -> impl FnMut((Id, GetVec)) -> Option<(Id, GetVec)> + '_ {
+        |(_, group)| {
+            if group.len() > 1 {
+                Some((egraph.add(Op::Arg(group[0])), group))
+            } else {
+                None
+            }
+        }
+    }
+    let mut input_groups: Vec<_> = dedup_inputs.drain().filter_map(is_group(egraph)).collect();
     let mut next_groups = Vec::new();
     let mut dedup_subst = DeepSubst::default();
     let mut proved = false;
     while !proved && !input_groups.is_empty() {
         // Rewrite every use of variables from seemingly equivalent groups to refer to one
         // representative member of the group.
-        let dedup: Vec<_> = input_groups
-            .iter()
-            .flat_map(|group| {
-                let representative = egraph.add(Op::Arg(group[0]));
-                group[1..].iter().map(move |&idx| (idx, representative))
-            })
-            .collect();
+        let dedup = input_groups.iter().flat_map(|(representative, group)| {
+            group[1..].iter().map(|idx| (*idx, *representative))
+        });
         dedup_subst = DeepSubst::new(egraph, dedup);
 
         // Now test if the hypothesis holds.
         proved = true;
-        for group in input_groups.drain(..) {
+        for (_, group) in input_groups.drain(..) {
             for idx in group {
                 let mut result = results[usize::from(idx)];
                 dedup_subst.rewrite(egraph, &mut result);
@@ -265,14 +269,14 @@ fn rewrite_loop(
                 // smaller groups, so the outer loop is guaranteed to terminate.
                 proved = false;
             }
-            next_groups.extend(dedup_inputs.drain().filter_map(is_group));
+            next_groups.extend(dedup_inputs.drain().filter_map(is_group(egraph)));
         }
         std::mem::swap(&mut input_groups, &mut next_groups);
     }
 
     let mut to_merge = ArgsUsedData::ZERO;
     if proved {
-        for group in input_groups.iter() {
+        for (_, group) in input_groups.iter() {
             for &idx in group[1..].iter() {
                 outputs[usize::from(idx)] = Renumber(group[0]);
                 to_merge.set(idx.into(), true);
