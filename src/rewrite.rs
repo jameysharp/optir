@@ -160,9 +160,12 @@ enum RewriteResult {
 }
 use RewriteResult::*;
 
-fn union_outputs(egraph: &mut EGraph, old: Id, new: Id, new_len: usize, outputs: &[RewriteResult]) {
+fn union_outputs<I>(egraph: &mut EGraph, old: Id, new: Id, new_len: usize, outputs: I)
+where
+    I: IntoIterator<Item = RewriteResult>,
+{
     let mut outputs_changed = false;
-    for (idx, &rewrite) in outputs.iter().enumerate() {
+    for (idx, rewrite) in outputs.into_iter().enumerate() {
         let idx = idx.try_into().unwrap();
         outputs_changed |= rewrite != Renumber(idx);
 
@@ -179,7 +182,6 @@ fn union_outputs(egraph: &mut EGraph, old: Id, new: Id, new_len: usize, outputs:
     }
 
     if !outputs_changed {
-        debug_assert!(outputs.len() <= new_len);
         egraph.union(old, new);
     }
 }
@@ -202,14 +204,10 @@ fn rewrite_loop(
     let mut predicate_once = predicate;
     initial_subst.rewrite(egraph, &mut predicate_once);
     if let Some(0) = egraph[predicate_once].data.constant_fold() {
-        let outputs: Vec<RewriteResult> = results
-            .iter_mut()
-            .map(|result| {
-                initial_subst.rewrite(egraph, result);
-                CopyFrom(*result)
-            })
-            .collect();
-        union_outputs(egraph, id, id, 0, &outputs);
+        for result in results.iter_mut() {
+            initial_subst.rewrite(egraph, result);
+        }
+        union_outputs(egraph, id, id, 0, results.into_iter().map(CopyFrom));
         return;
     }
 
@@ -433,7 +431,7 @@ fn rewrite_loop(
         .chain(std::iter::once(predicate))
         .collect();
     let new_loop = egraph.add(Op::Loop(loop_args));
-    union_outputs(egraph, id, new_loop, final_count, &outputs);
+    union_outputs(egraph, id, new_loop, final_count, outputs);
 }
 
 fn find_loop_invariant_exprs(
@@ -575,13 +573,13 @@ fn rewrite_switch(
         new_switch = egraph.add(Op::Switch(spec, switch_args));
     }
 
-    union_outputs(egraph, id, new_switch, has_different, &common_outputs);
+    union_outputs(egraph, id, new_switch, has_different, common_outputs);
     // TODO: delete switch node from this class?
 }
 
-fn rewrite_call(egraph: &mut EGraph, id: Id, inputs: Vec<Id>, sig: Signature, func: Vec<Id>) {
+fn rewrite_call(egraph: &mut EGraph, id: Id, inputs: Vec<Id>, sig: Signature, mut func: Vec<Id>) {
     assert_eq!(inputs.len(), sig.inputs.into());
-    let (const_inputs, results) = sig.split_scope(&func);
+    let (const_inputs, results) = sig.split_scope_mut(&mut func);
 
     let subst = inputs
         .into_iter()
@@ -590,13 +588,8 @@ fn rewrite_call(egraph: &mut EGraph, id: Id, inputs: Vec<Id>, sig: Signature, fu
         .map(|(idx, arg)| (idx.try_into().unwrap(), arg));
     let subst = DeepSubst::new(egraph, subst);
 
-    let outputs: Vec<RewriteResult> = results
-        .iter()
-        .map(|&(mut result)| {
-            subst.rewrite(egraph, &mut result);
-            CopyFrom(result)
-        })
-        .collect();
-
-    union_outputs(egraph, id, id, 0, &outputs);
+    for result in results.iter_mut() {
+        subst.rewrite(egraph, result);
+    }
+    union_outputs(egraph, id, id, 0, results.iter().copied().map(CopyFrom));
 }
