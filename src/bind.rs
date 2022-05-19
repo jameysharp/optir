@@ -98,16 +98,25 @@ pub fn resolve_bindings<L: Language + Clone>(input: &RecExpr<Binding<L>>) -> Rec
 }
 
 pub fn bind_common_subexprs<L: Language + Clone>(input: &RecExpr<L>) -> RecExpr<Binding<L>> {
-    let mut uses = HashMap::with_capacity(input.as_ref().len());
+    let mut uses = Vec::new();
+    uses.resize(input.as_ref().len(), 0u8);
+    *uses.last_mut().unwrap() = 1;
+
     for (idx, enode) in input.as_ref().iter().enumerate().rev() {
+        if uses[idx] == 0 {
+            continue;
+        }
         let children = enode.children();
         if children.is_empty() {
             // Never treat leaves as shared. Since we're walking the RecExpr in reverse, we're
             // guaranteed to visit a leaf only after we've visited all nodes which reference it.
-            uses.remove(&idx);
+            uses[idx] = 1;
         } else {
             for &child in children {
-                *uses.entry(usize::from(child)).or_insert(0) += 1;
+                debug_assert!(usize::from(child) < idx);
+                let count = &mut uses[usize::from(child)];
+                // Don't need an exact count, just "is it more than 1".
+                *count = count.saturating_add(1);
             }
         }
     }
@@ -116,19 +125,20 @@ pub fn bind_common_subexprs<L: Language + Clone>(input: &RecExpr<L>) -> RecExpr<
         format!("?{}", idx).parse().unwrap()
     }
 
-    uses.retain(|_idx, count| *count > 1);
-    let mut result = RecExpr::from(Vec::with_capacity(input.as_ref().len() + uses.len() * 2));
+    let mut result = RecExpr::default();
     let mut last = Id::from(!0);
     for (idx, enode) in input.as_ref().iter().enumerate() {
-        last = result.add(if uses.contains_key(&idx) {
+        last = result.add(if uses[idx] > 1 {
             Binding::Use(mkvar(idx))
         } else {
             Binding::ENode(enode.clone())
         });
     }
-    for (idx, _count) in uses {
-        let val = result.add(Binding::ENode(input[Id::from(idx)].clone()));
-        last = result.add(Binding::Bind(mkvar(idx), [val, last]));
+    for (idx, count) in uses.into_iter().enumerate().rev() {
+        if count > 1 {
+            let val = result.add(Binding::ENode(input[Id::from(idx)].clone()));
+            last = result.add(Binding::Bind(mkvar(idx), [val, last]));
+        }
     }
     result
 }
