@@ -150,6 +150,8 @@ define_language! {
         ">>" = ShiftRightZero([Id; 2]),
         ">>s" = ShiftRightSign([Id; 2]),
         "&" = BitAnd([Id; 2]),
+        "=" = Equal([Id; 2]),
+        ">" = Greater([Id; 2]),
 
         // An RVSDG "theta" node representing a structured tail-controlled loop. The last operand
         // is the predicate indicating whether the loop should continue for another iteration. The

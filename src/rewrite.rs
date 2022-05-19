@@ -25,6 +25,7 @@ pub fn rules() -> Vec<Rewrite> {
         rewrite!("comm-add"; "(+ ?x ?y)" => "(+ ?y ?x)"),
         rewrite!("comm-mul"; "(* ?x ?y)" => "(* ?y ?x)"),
         rewrite!("comm-and"; "(& ?x ?y)" => "(& ?y ?x)"),
+        rewrite!("comm-eq"; "(= ?x ?y)" => "(= ?y ?x)"),
         rewrite!("zero-add"; "(+ ?x 0)" => "?x"),
         rewrite!("zero-mul"; "(* ?x 0)" => "0"),
         rewrite!("one-mul"; "(* ?x 1)" => "?x"),
@@ -44,6 +45,11 @@ pub fn rules() -> Vec<Rewrite> {
         rewrite!("shift-mul"; "(<< ?a ?n)" => "(* ?a (<< 1 ?n))"),
         rewrite!("shift-shift-left"; "(<< (<< ?a ?b) ?c)" => "(<< ?a (+ ?b ?c))"),
         rewrite!("shift-left-back"; "(<< (>> ?a ?b) ?b)" => "(& ?a (<< -1 ?b))"),
+        rewrite!("equiv-eq"; "(= ?x ?x)" => "1"),
+        rewrite!("equiv-gt"; "(> ?x ?x)" => "0"),
+        rewrite!("bool-eq-true"; "(= (= ?a ?b) 1)" => "(= ?a ?b)"),
+        rewrite!("bool-gt-true"; "(= (> ?a ?b) 1)" => "(> ?a ?b)"),
+        rewrite!("triple-not"; "(= (= (= ?x 0) 0) 0)" => "(= ?x 0)"),
     ]
 }
 
