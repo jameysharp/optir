@@ -4,7 +4,6 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::mem::{size_of, take};
 
-pub mod build_rvsdg;
 pub mod from_structured;
 pub mod restructure;
 

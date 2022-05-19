@@ -3,8 +3,7 @@
 use std::io::BufRead;
 
 use optir::bind::bind_common_subexprs;
-use optir::cfg::build_rvsdg::build_rvsdg;
-use optir::cfg::from_structured::build_function_region;
+use optir::cfg::from_structured::build_rvsdg;
 use optir::cfg::parse_instructions;
 use optir::cfg::restructure::restructure_cfg;
 
@@ -25,8 +24,7 @@ fn main() -> std::io::Result<()> {
     restructure_cfg(&mut cfg, &mut names);
     //println!("{}", petgraph::dot::Dot::new(&cfg));
 
-    let (region, outputs) = build_function_region(&cfg, &mut names);
-    let input = build_rvsdg(&names, &region, &outputs);
+    let input = build_rvsdg(&cfg, &names);
 
     println!("{}", bind_common_subexprs(&input).pretty(80));
 
