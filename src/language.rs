@@ -153,6 +153,16 @@ define_language! {
         "=" = Equal([Id; 2]),
         ">" = Greater([Id; 2]),
 
+        // Operationally a no-op, the "use" operator serves as an optimization barrier. It produces
+        // a single state-typed output and consumes any number of inputs of any type, although at
+        // least one input should be a state. This imposes an artificial dataflow dependency,
+        // ensuring that the inputs are evaluated before anything that uses this state output.
+        // States, which have no runtime representation, allow a VSDG to model side effects and
+        // non-termination. Any loop which does not have either a "use" operator or an explicit
+        // source of side effects somewhere inside it may get optimized away if nothing depends on
+        // its computational results, even if the loop would not have terminated.
+        "use" = Use(Box<[Id]>),
+
         // An RVSDG "theta" node representing a structured tail-controlled loop. The last operand
         // is the predicate indicating whether the loop should continue for another iteration. The
         // other operands are N inputs, followed by N results. The input is available in the first

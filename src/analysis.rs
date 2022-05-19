@@ -97,6 +97,7 @@ impl egg::Analysis<Op> for Analysis {
                 Op::BitAnd([l, r]) => c(l)? & c(r)?,
                 Op::Equal([l, r]) => (c(l)? == c(r)?) as i32,
                 Op::Greater([l, r]) => (c(l)? > c(r)?) as i32,
+                Op::Use(_) => return None,
                 Op::Loop(_) => return None,
                 Op::Switch(_, _) => return None,
                 Op::Function(_, _) => return None,
