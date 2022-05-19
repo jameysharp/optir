@@ -2,13 +2,9 @@
 
 use std::io::Read;
 
-mod analysis;
-mod bind;
-mod extract;
-mod language;
-mod rewrite;
-
-use bind::{bind_common_subexprs, resolve_bindings};
+use optir::bind::{bind_common_subexprs, resolve_bindings};
+use optir::extract;
+use optir::rewrite;
 
 fn main() -> std::io::Result<()> {
     let mut input = String::new();
