@@ -6,6 +6,7 @@ use petgraph::Direction;
 use std::collections::HashMap;
 use std::num::NonZeroU8;
 
+use super::live_variables::{live_variables, LiveVariables};
 use super::{Instruction, Names, Operand, Operands, CFG};
 use crate::language::{Op, Signature, Switch};
 
@@ -13,6 +14,7 @@ type CFGNode = <CFG as GraphBase>::NodeId;
 
 struct RVSDGBuilder<'a> {
     g: &'a CFG,
+    live_variables: LiveVariables,
     dominance: dominators::Dominators<CFGNode>,
     defs: HashMap<Operand, Id>,
     result: RecExpr<Op>,
@@ -27,6 +29,7 @@ pub fn build_rvsdg(g: &CFG, names: &Names) -> RecExpr<Op> {
     let mut start = node_index(0);
     let mut builder = RVSDGBuilder {
         g,
+        live_variables: live_variables(g),
         dominance: dominators::simple_fast(g, start),
         defs: HashMap::new(),
         result: RecExpr::default(),
@@ -82,12 +85,14 @@ impl<'a> RVSDGBuilder<'a> {
             return self.switch_region(start);
         };
 
+        debug_assert_eq!(&self.live_variables[&start].0, &self.live_variables[&end].1);
+
         let mut output_vars = Vec::with_capacity(self.defs.len());
         let mut args = Vec::with_capacity(self.defs.len() * 2 + 1);
-        for (op, def) in self.defs.iter() {
-            if !op.is_const() {
-                output_vars.push(*op);
-                args.push(*def);
+        for &op in &self.live_variables[&start].0 {
+            if let Some(&def) = self.defs.get(&op) {
+                output_vars.push(op);
+                args.push(def);
             }
         }
 
@@ -110,7 +115,7 @@ impl<'a> RVSDGBuilder<'a> {
 
         let term = self.append(end);
 
-        let (end, pred) = if let Some(next) = self.g.neighbors(end).find(|&n| n != start) {
+        let (next, pred) = if let Some(next) = self.g.neighbors(end).find(|&n| n != start) {
             let mut pred = self.defs[&expect_switch(term)];
             if label != 1 {
                 let val = self.constant(label.try_into().unwrap());
@@ -126,8 +131,8 @@ impl<'a> RVSDGBuilder<'a> {
             .iter()
             .map(|op| self.defs.remove(op).unwrap())
             .collect();
-        for (&op, &def) in self.defs.iter() {
-            if !op.is_const() {
+        for &op in &self.live_variables[&end].1 {
+            if let Some(&def) = self.defs.get(&op) {
                 outputs.push(def);
                 output_vars.push(op);
             }
@@ -142,7 +147,7 @@ impl<'a> RVSDGBuilder<'a> {
             self.define(op, Op::Get(idx.try_into().unwrap(), place));
         }
 
-        end
+        next
     }
 
     // from a switch start, all outgoing edges must go to blocks that either:
@@ -150,11 +155,11 @@ impl<'a> RVSDGBuilder<'a> {
     // - have a single predecessor and a single successor (namely, the end of the switch)
     // - or start a linear region, followed by this switch's end.
     fn switch_region(&mut self, start: CFGNode) -> Option<CFGNode> {
-        // precondition: `start` is not at the end of a loop
-        debug_assert!(self.g.edges(start).all(|e| !self.is_loop_edge(&e)));
-
         let mut branches: Vec<_> = self.g.edges(start).collect();
         debug_assert!(!branches.is_empty());
+
+        // precondition: `start` is not at the end of a loop
+        debug_assert!(branches.iter().all(|e| !self.is_loop_edge(e)));
 
         let term = self.append(start);
 
@@ -170,14 +175,17 @@ impl<'a> RVSDGBuilder<'a> {
         let mut args = Vec::with_capacity(1 + self.defs.len());
         args.push(self.defs[&op]);
 
-        let mut inner_defs = self.defs.clone();
-        for (idx, (_, def)) in inner_defs
-            .iter_mut()
-            .filter(|(op, _)| !op.is_const())
-            .enumerate()
-        {
-            args.push(*def);
-            *def = self.add(Op::Arg(idx.try_into().unwrap()));
+        let mut inner_defs: HashMap<_, _> = self
+            .defs
+            .iter()
+            .filter_map(|(&op, &def)| Some((op, def)).filter(|_| op.is_const()))
+            .collect();
+        for &op in &self.live_variables[&start].1 {
+            if let Some(&def) = self.defs.get(&op) {
+                let idx = args.len() - 1;
+                args.push(def);
+                inner_defs.insert(op, self.result.add(Op::Arg(idx.try_into().unwrap())));
+            }
         }
 
         let zero = self.constant(0);
@@ -197,18 +205,21 @@ impl<'a> RVSDGBuilder<'a> {
             }
 
             let mut outputs = Vec::from(&orig_outputs[..]);
-            for (op, def) in new_defs {
-                let old_def = inner_defs.get(&op).copied();
-                if Some(def) != old_def {
-                    let idx = *places.entry(op).or_insert_with(|| {
-                        let new = orig_outputs.len();
-                        let orig_def = old_def.unwrap_or(zero);
-                        orig_outputs.push(orig_def);
-                        outputs.push(orig_def);
-                        debug_assert_eq!(orig_outputs.len(), outputs.len());
-                        new
-                    });
-                    outputs[idx] = def;
+            if let Some(next) = next {
+                for &op in &self.live_variables[&next].0 {
+                    let def = new_defs[&op];
+                    let old_def = inner_defs.get(&op).copied();
+                    if Some(def) != old_def {
+                        let idx = *places.entry(op).or_insert_with(|| {
+                            let new = orig_outputs.len();
+                            let orig_def = old_def.unwrap_or(zero);
+                            orig_outputs.push(orig_def);
+                            outputs.push(orig_def);
+                            debug_assert_eq!(orig_outputs.len(), outputs.len());
+                            new
+                        });
+                        outputs[idx] = def;
+                    }
                 }
             }
             partial_outputs.push(outputs);

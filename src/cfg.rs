@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::mem::{size_of, take};
 
 pub mod from_structured;
+pub mod live_variables;
 pub mod restructure;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
