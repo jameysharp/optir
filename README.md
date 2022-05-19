@@ -148,9 +148,9 @@ function's outputs. For example,
 - after the inner `switch` is simplified, the outer switch's input 3 is
   never used, so it can be removed.
 
-As of this writing, optir applies all the above simplifications and a
-few other similar cases to reduce that example to this equivalent
-expression:
+As of this writing, `cargo run --bin optir` applies all the above
+simplifications and a few other similar cases to reduce that example to
+this equivalent expression:
 
 ```lisp
 (func-4-inputs-4-outputs
@@ -229,6 +229,106 @@ rewrite rules, which helps a lot.
 
 Loop peeling looks easy to do in this framework too, but I haven't tried
 implementing it yet.
+
+# CFG input language
+
+I've also implemented conversion from control-flow graphs to RVSDGs,
+following the algorithm in ["Perfect Reconstructability of Control Flow
+from Demand Dependence Graphs"][control-flow], section 4. Input is in a
+kind of assembly language in the style of three-address code. Its
+primary feature is that it was easy for me to parse.
+
+Each instruction, label, and function definition gets its own line.
+Comments are introduced with either `#` or `;` and extend to the end of
+the line. Tokens are separated by whitespace but whitespace is not
+otherwise significant. Variable and label identifiers can be any
+sequence of non-whitespace Unicode characters unless they're either a
+signed integer or the special token `->`.
+
+A CFG begins with a function definition of the form `function ->`
+followed by the names of any arguments to the function. (The `->` can be
+omitted if there are no arguments.)
+
+A block of instructions can be labeled with `label` followed by an
+identifier, and branched to with `goto` followed by an identifier. If a
+block ends without a branch instruction, it implicitly falls through to
+the next block.
+
+Conditional branches are defined with `switch`, followed by a variable
+name, and then two or more label names. The value of the variable must
+be between 0 and the number of labels, minus one, and selects which
+label to branch to.
+
+The function's result is determined by a `return` statement, followed by
+a sequence of variable names (or constants) to return.
+
+Statements are either `mov x -> y` meaning to copy the value in `x` into
+`y`, or are an operator from the RVSDG language above. The operator name
+(`*`, `>>`, etc) goes first, then its operands, then the `->` token, and
+then the names to assign its results to.
+
+Here's a CFG to compute the nth natural power of x, corresponding to the
+example above for RVSDG loops:
+
+```
+function -> x n
+  mov 1 -> y
+label loop
+  & n 1 -> c
+  switch c even odd
+label odd
+  * y x -> y
+label even
+  * x x -> x
+  = n 0 -> c
+  >> n 1 -> n
+  switch c done loop
+label done
+  return y
+```
+
+Note that if nothing is returned, then none of the computation in the
+function is needed and the generated RVSDG will be empty! For
+non-terminating and side-effecting functions, you need an extra `state`
+parameter to the function, which you need to thread through every
+operation that must execute, and then finally return the state as part
+of the function's result.
+
+In addition, if you don't have any side-effecting operations in the body
+of a loop and want to preserve non-termination, add a `use state ->
+state` statement. At runtime it's a no-op, but it keeps the state
+variable from appearing to be loop-invariant.
+
+Even irreducible control flow is allowed, but there are currently two
+constraints on control flow. First, there must be exactly one return
+statement in the function, though it can appear anywhere. Second,
+infinite loops must have a branch that can reach the return statement,
+even if that branch can never be taken dynamically.
+
+Illustrating these requirements, here's an example of a function which
+decides whether to return or to loop forever based on its argument. The
+`switch 1` statement always branches to its second label, but the first
+label is still there to signal to the transformation how to thread the
+state variable through the generated RVSDG.
+
+```
+function -> state should-halt
+  switch should-halt forever done
+label forever
+  use state -> state
+  switch 1 done forever
+label done
+  return state
+```
+
+Running `cargo run --bin build-rvsdg` on that example generates this
+RVSDG:
+
+```lisp
+(func-2-inputs-1-outputs
+  (get-0
+    (switch-2-cases-1-outputs get-1 get-0 (get-0 (loop get-0 (use get-0) 1)) get-0)))
+```
 
 # e-graphs good
 
